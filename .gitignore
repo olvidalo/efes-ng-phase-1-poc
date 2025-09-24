@@ -7,3 +7,4 @@ dist/
 *.tsbuildinfo
 scratch
 CLAUDE.md
+.efes-cache

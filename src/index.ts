@@ -3,6 +3,7 @@ import * as path from "node:path";
 import {fork} from "child_process";
 import { DepGraph }  from "dependency-graph"
 import { glob } from "glob";
+import { CacheManager } from "./cache";
 
 
 // TODO: Maybe use Async Generators instead of promises and implement streaming
@@ -42,16 +43,68 @@ abstract class PipelineNode<TConfig extends PipelineNodeConfig = PipelineNodeCon
     get inputs(): TConfig["inputs"] { return this.config.inputs; }
 
     abstract run(context: PipelineContext): Promise<NodeOutput<TOutput>[]>;
+
+    // Unified caching for single or multiple items
+    protected async withCache<T>(
+        context: PipelineContext,
+        items: string[],
+        getCacheKey: (item: string) => string,
+        getOutputPath: (item: string) => string,
+        processItem: (item: string) => Promise<T>
+    ): Promise<Array<{item: string, output: string, cached: boolean, result?: T}>> {
+        // Auto-detect dependencies from from() inputs
+        const deps: Record<string, {path: string, hash: string}> = {};
+        for (const [inputName, input] of Object.entries(this.inputs)) {
+            if (inputIsNodeOutputReference(input)) {
+                const resolvedPaths = await context.resolveInput(input);
+                if (resolvedPaths.length > 0) {
+                    deps[inputName] = {
+                        path: resolvedPaths[0],
+                        hash: await context.cache.computeFileHash(resolvedPaths[0])
+                    };
+                }
+            }
+        }
+
+        const cacheKeys = items.map(getCacheKey);
+        await context.cache.cleanExcept(this.name, cacheKeys);
+
+        const results = [];
+        for (let i = 0; i < items.length; i++) {
+            const item = items[i];
+            const cacheKey = cacheKeys[i];
+            const outputPath = getOutputPath(item);
+
+            const cached = await context.cache.getCache(this.name, cacheKey);
+            if (cached && await context.cache.isValid(cached)) {
+                context.log(`  - Skipping: ${item} (cached)`);
+                results.push({item, output: cached.outputPaths[0], cached: true});
+                continue;
+            }
+
+            const result = await processItem(item);
+
+            const cacheEntry = await context.cache.buildCacheEntry(
+                [item], [outputPath], deps, cacheKey
+            );
+            await context.cache.setCache(this.name, cacheKey, cacheEntry);
+
+            results.push({item, output: outputPath, cached: false, result});
+        }
+        return results;
+    }
 }
 
 interface PipelineContext {
     resolveInput(input: Input): Promise<string[]>;
     log(message: string): void;
+    cache: CacheManager;
 }
 
 export class Pipeline {
     private graph = new DepGraph<PipelineNode>();
     private nodeOutputs = new Map<string, NodeOutput<any>[]>;
+    private cache = new CacheManager();
 
     constructor(public readonly name: string) { }
 
@@ -115,7 +168,8 @@ export class Pipeline {
 
                 return []
             },
-            log: (message: string) => console.log(`  [${this.name}] ${message}`)
+            log: (message: string) => console.log(`  [${this.name}] ${message}`),
+            cache: this.cache,
         }
 
         for (const nodeName of executionOrder) {
@@ -154,18 +208,18 @@ interface CompileStylesheetConfig extends PipelineNodeConfig {
 export class CompileStylesheetNode extends PipelineNode<CompileStylesheetConfig, "compiledStylesheet"> {
     async run(context: PipelineContext) {
         const xsltPath = await context.resolveInput(this.inputs.xslt);
+        if (xsltPath.length !== 1) throw new Error("Multiple xslt input files not supported");
 
-        // TODO error handling if not exists, can't be read etc
-        console.log(this.inputs)
-        console.log(xsltPath)
-        if (xsltPath.length !== 1) throw new Error("Multiple xslt input files not supported")
+        const sefPath = path.resolve(this.config.outputFilename);
 
-        const sefDir = path.dirname(path.resolve(this.config.outputFilename));
-        const sefFilename = path.basename(this.config.outputFilename);
-        const sefPath = path.join(sefDir, sefFilename);
-
-        context.log(`Compiling ${xsltPath[0]} to ${sefPath}`);
-        try {
+        const results = await this.withCache(
+            context,
+            xsltPath,
+            (item) => item,
+            () => sefPath,
+            async (item) => {
+                context.log(`Compiling ${item} to ${sefPath}`);
+                try {
             await new Promise<void>((resolve, reject) => {
                 const xslt3Path = require.resolve('xslt3');
 
@@ -195,7 +249,7 @@ export class CompileStylesheetNode extends PipelineNode<CompileStylesheetConfig,
 
                 child.on('close', (code) => {
                     if (code === 0) {
-                        console.log(`Successfully compiled: ${path.basename(sefDir)}`);
+                        console.log(`Successfully compiled: ${path.basename(sefPath)}`);
                         resolve();
                     } else {
                         reject(new Error(`XSLT compilation failed with exit code ${code}\nstderr: ${stderr}`));
@@ -206,11 +260,13 @@ export class CompileStylesheetNode extends PipelineNode<CompileStylesheetConfig,
                     reject(new Error(`Failed to fork xslt3 process: ${err.message}`));
                 });
             });
-        } catch (err: any) {
-            throw new Error(`Failed to compile XSL: ${err.message}`);
-        }
+                } catch (err: any) {
+                    throw new Error(`Failed to compile XSL: ${err.message}`);
+                }
+            }
+        );
 
-        return [{ compiledStylesheet: [sefPath] }];
+        return [{ compiledStylesheet: [results[0].output] }];
     }
 }
 
@@ -241,32 +297,34 @@ export class XsltTransformNode extends PipelineNode<XsltTransformConfig, "transf
     }
 
     async run(context: PipelineContext) {
-        const sefStylesheetPath = await context.resolveInput(this.inputs.sefStylesheet);
+        const sefStylesheetPath = (await context.resolveInput(this.inputs.sefStylesheet))[0];
         const sourcePaths = await context.resolveInput(this.inputs.sourceXml);
 
         context.log(`Transforming ${sourcePaths.length} file(s) with ${sefStylesheetPath}`);
-        const transformed = []
-        for (const sourcePath of sourcePaths) {
-            // const filename = path.basename(sourcePath);
-            // const basename = path.basename(filename, path.extname(filename));
-            // const resultPath = path.join(this.config.resultDocumentsDir ?? '', basename + '.html');
 
-            const result = await transform({
-                stylesheetFileName: sefStylesheetPath[0],
-                sourceFileName: sourcePath,
-                destination: 'serialized'
-            })
+        const outputFilenameMapper = this.config.outputFilenameMapping ?? this.defaultOutputFilenameMapping;
 
-            const outputFilenameMapper = this.config.outputFilenameMapping ?? this.defaultOutputFilenameMapping;
-            const outputPath = outputFilenameMapper(sourcePath);
-            await fs.writeFile(outputPath, result.principalResult);
+        const results = await this.withCache(
+            context,
+            sourcePaths,
+            (item) => `${item}-with-${sefStylesheetPath}`,
+            (item) => outputFilenameMapper(item),
+            async (sourcePath) => {
+                const result = await transform({
+                    stylesheetFileName: sefStylesheetPath,
+                    sourceFileName: sourcePath,
+                    destination: 'serialized'
+                });
 
-            transformed.push({
-                transformed: [outputPath],
-                "result-documents": []
-            });
-        }
+                const outputPath = outputFilenameMapper(sourcePath);
+                await fs.writeFile(outputPath, result.principalResult);
+                context.log(`  - Generated: ${outputPath}`);
+            }
+        );
 
-        return transformed;
+        return results.map(r => ({
+            transformed: [r.output],
+            "result-documents": []
+        }));
     }
 }
