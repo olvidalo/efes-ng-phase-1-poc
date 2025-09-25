@@ -46,6 +46,14 @@ interface CacheEntry {
   dependencies: Record<string, { path: string; hash: string }>;
 
   /**
+   * Implicit dependencies discovered at runtime.
+   * Files accessed via document() calls in XSLT transformations.
+   * Tracked transparently to ensure cache invalidation when these change.
+   * Map: filePath -> hash
+   */
+  implicitDependencies?: Record<string, string>;
+
+  /**
    * When this cache entry was created.
    * Used for debugging ("why did this rebuild?") and potential TTL expiry.
    * Milliseconds since epoch.
@@ -158,16 +166,21 @@ export class CacheManager {
       }
     }
 
-    // Finally, check dependencies haven't changed
-    for (const [depName, depInfo] of Object.entries(entry.dependencies)) {
+    // Check all dependencies (explicit and implicit)
+    const allDeps = [
+      ...Object.entries(entry.dependencies).map(([name, info]) => ({ path: info.path, hash: info.hash })),
+      ...Object.entries(entry.implicitDependencies || {}).map(([path, hash]) => ({ path, hash }))
+    ];
+
+    for (const { path, hash } of allDeps) {
       try {
-        const currentHash = await this.computeFileHash(depInfo.path);
-        if (currentHash !== depInfo.hash) {
-          // Dependency content changed - cache invalid
+        const currentHash = await this.computeFileHash(path);
+        if (currentHash !== hash) {
+          // Dependency changed - cache invalid
           return false;
         }
       } catch {
-        // Dependency file missing - cache invalid
+        // Dependency missing - cache invalid
         return false;
       }
     }
@@ -265,7 +278,8 @@ export class CacheManager {
     inputPaths: string[],
     outputPaths: string[],
     dependencies: Record<string, { path: string; hash: string }>,
-    itemKey: string
+    itemKey: string,
+    implicitDependencies?: string[]
   ): Promise<CacheEntry> {
     const inputHashes: Record<string, string> = {};
     const inputTimestamps: Record<string, number> = {};
@@ -280,12 +294,26 @@ export class CacheManager {
       inputTimestamps[inputPath] = stats.mtimeMs;
     }
 
+    // Compute hashes for implicit dependencies if provided
+    const implicitDeps: Record<string, string> = {};
+    if (implicitDependencies) {
+      for (const path of implicitDependencies) {
+        try {
+          implicitDeps[path] = await this.computeFileHash(path);
+        } catch {
+          // If we can't hash an implicit dependency, skip it
+          // (it might not exist yet or be optional)
+        }
+      }
+    }
+
     return {
       inputPaths,
       inputHashes,
       inputTimestamps,
       outputPaths,
       dependencies,
+      ...(Object.keys(implicitDeps).length > 0 && { implicitDependencies: implicitDeps }),
       timestamp: Date.now(),
       itemKey
     };

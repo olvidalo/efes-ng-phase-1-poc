@@ -5,12 +5,8 @@ import { DepGraph }  from "dependency-graph"
 import { glob } from "glob";
 import { CacheManager } from "./cache";
 
-
-// TODO: Maybe use Async Generators instead of promises and implement streaming
-
 // eslint-disable-next-line @typescript-eslint/no-var-requires
-const { transform } = require('saxon-js');
-
+const { transform, getResource } = require('saxon-js');
 
 interface NodeOutputReference {
     node: PipelineNode<any, any>;
@@ -50,7 +46,7 @@ abstract class PipelineNode<TConfig extends PipelineNodeConfig = PipelineNodeCon
         items: string[],
         getCacheKey: (item: string) => string,
         getOutputPath: (item: string) => string,
-        processItem: (item: string) => Promise<T>
+        performWork: (item: string) => Promise<T | { result?: T, implicitDependencies?: string[] } | void>
     ): Promise<Array<{item: string, output: string, cached: boolean, result?: T}>> {
         // Auto-detect dependencies from from() inputs
         const deps: Record<string, {path: string, hash: string}> = {};
@@ -82,10 +78,23 @@ abstract class PipelineNode<TConfig extends PipelineNodeConfig = PipelineNodeCon
                 continue;
             }
 
-            const result = await processItem(item);
+            const processed = await performWork(item);
+
+            // Handle different return types
+            let result: T | undefined;
+            let implicitDependencies: string[] | undefined;
+
+            if (processed && typeof processed === 'object' && 'implicitDependencies' in processed) {
+                // Object with implicit dependencies
+                result = processed.result;
+                implicitDependencies = processed.implicitDependencies;
+            } else {
+                // Simple result value or void
+                result = processed as T;
+            }
 
             const cacheEntry = await context.cache.buildCacheEntry(
-                [item], [outputPath], deps, cacheKey
+                [item], [outputPath], deps, cacheKey, implicitDependencies
             );
             await context.cache.setCache(this.name, cacheKey, cacheEntry);
 
@@ -282,7 +291,7 @@ interface XsltTransformConfig extends PipelineNodeConfig {
     name: string;
     inputs: {
         sefStylesheet: Input;
-        sourceXml: Input;
+        sourceXml?: Input;
     };
     outputFilenameMapping?: (inputPath: string) => string;
     resultDocumentsDir?: string;
@@ -296,27 +305,43 @@ export class XsltTransformNode extends PipelineNode<XsltTransformConfig, "transf
         return path.join(inputDirname, inputBasename + '.html');
     }
 
+
     async run(context: PipelineContext) {
         const sefStylesheetPath = (await context.resolveInput(this.inputs.sefStylesheet))[0];
-        const sourcePaths = await context.resolveInput(this.inputs.sourceXml);
 
-        context.log(`Transforming ${sourcePaths.length} file(s) with ${sefStylesheetPath}`);
+        // Handle no-source mode (stylesheet uses document() for input)
+        const sourcePaths = this.inputs.sourceXml ?
+            await context.resolveInput(this.inputs.sourceXml) :
+            [sefStylesheetPath];
+
+        const isNoSourceMode = !this.inputs.sourceXml;
+        context.log(`${isNoSourceMode ? 'Running stylesheet' : `Transforming ${sourcePaths.length} file(s)`} with ${sefStylesheetPath}`);
 
         const outputFilenameMapper = this.config.outputFilenameMapping ?? this.defaultOutputFilenameMapping;
 
         const results = await this.withCache(
             context,
             sourcePaths,
-            (item) => `${item}-with-${sefStylesheetPath}`,
-            (item) => outputFilenameMapper(item),
+            (item) => isNoSourceMode ? `no-source-${sefStylesheetPath}` : `${item}-with-${sefStylesheetPath}`,
+            (item) => isNoSourceMode ?
+                (this.config.outputFilenameMapping?.(sefStylesheetPath) ?? sefStylesheetPath.replace('.sef.json', '.html')) :
+                outputFilenameMapper(item),
             async (sourcePath) => {
-                const result = await transform({
-                    stylesheetFileName: sefStylesheetPath,
-                    sourceFileName: sourcePath,
-                    destination: 'serialized'
-                });
 
-                const outputPath = outputFilenameMapper(sourcePath);
+                const transformOptions: any = {
+                    stylesheetFileName: sefStylesheetPath,
+                    destination: 'serialized'
+                };
+
+                if (!isNoSourceMode) {
+                    transformOptions.sourceFileName = sourcePath;
+                }
+
+                const result = await transform(transformOptions);
+                const outputPath = isNoSourceMode ?
+                (this.config.outputFilenameMapping?.(sefStylesheetPath) ?? sefStylesheetPath.replace('.sef.json', '.html')) :
+                outputFilenameMapper(sourcePath);
+
                 await fs.writeFile(outputPath, result.principalResult);
                 context.log(`  - Generated: ${outputPath}`);
             }
