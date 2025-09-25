@@ -6,7 +6,9 @@ import { glob } from "glob";
 import { CacheManager } from "./cache";
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
-const { transform, getResource } = require('saxon-js');
+const { transform, getResource, XPath } = require('saxon-js');
+
+
 
 interface NodeOutputReference {
     node: PipelineNode<any, any>;
@@ -228,47 +230,54 @@ export class CompileStylesheetNode extends PipelineNode<CompileStylesheetConfig,
             () => sefPath,
             async (item) => {
                 context.log(`Compiling ${item} to ${sefPath}`);
+
+                // Extract XSLT dependencies before compilation
+                const implicitDependencies = await this.extractXsltDependencies(item);
+                context.log(`  Found ${implicitDependencies.length} dependencies: ${JSON.stringify(implicitDependencies)}`);
+
                 try {
-            await new Promise<void>((resolve, reject) => {
-                const xslt3Path = require.resolve('xslt3');
+                    await new Promise<void>((resolve, reject) => {
+                        const xslt3Path = require.resolve('xslt3');
 
-                const child = fork(xslt3Path, [
-                    `-xsl:${xsltPath[0]}`,
-                    `-export:${sefPath}`,
-                    '-relocate:on',
-                    '-nogo'
-                ], {
-                    silent: true // Capture stdio
-                });
+                        const child = fork(xslt3Path, [
+                            `-xsl:${xsltPath[0]}`,
+                            `-export:${sefPath}`,
+                            '-relocate:on',
+                            '-nogo'
+                        ], {
+                            silent: true // Capture stdio
+                        });
 
-                let stdout = '';
-                let stderr = '';
+                        let stdout = '';
+                        let stderr = '';
 
-                if (child.stdout) {
-                    child.stdout.on('data', (data) => {
-                        stdout += data.toString();
+                        if (child.stdout) {
+                            child.stdout.on('data', (data) => {
+                                stdout += data.toString();
+                            });
+                        }
+
+                        if (child.stderr) {
+                            child.stderr.on('data', (data) => {
+                                stderr += data.toString();
+                            });
+                        }
+
+                        child.on('close', (code) => {
+                            if (code === 0) {
+                                console.log(`Successfully compiled: ${path.basename(sefPath)}`);
+                                resolve();
+                            } else {
+                                reject(new Error(`XSLT compilation failed with exit code ${code}\nstderr: ${stderr}`));
+                            }
+                        });
+
+                        child.on('error', (err) => {
+                            reject(new Error(`Failed to fork xslt3 process: ${err.message}`));
+                        });
                     });
-                }
 
-                if (child.stderr) {
-                    child.stderr.on('data', (data) => {
-                        stderr += data.toString();
-                    });
-                }
-
-                child.on('close', (code) => {
-                    if (code === 0) {
-                        console.log(`Successfully compiled: ${path.basename(sefPath)}`);
-                        resolve();
-                    } else {
-                        reject(new Error(`XSLT compilation failed with exit code ${code}\nstderr: ${stderr}`));
-                    }
-                });
-
-                child.on('error', (err) => {
-                    reject(new Error(`Failed to fork xslt3 process: ${err.message}`));
-                });
-            });
+                    return { implicitDependencies };
                 } catch (err: any) {
                     throw new Error(`Failed to compile XSL: ${err.message}`);
                 }
@@ -276,6 +285,38 @@ export class CompileStylesheetNode extends PipelineNode<CompileStylesheetConfig,
         );
 
         return [{ compiledStylesheet: [results[0].output] }];
+    }
+
+    private async extractXsltDependencies(xsltPath: string): Promise<string[]> {
+        const allDependencies = new Set<string>();
+        const processed = new Set<string>();
+
+        async function processFile(filePath: string) {
+            if (processed.has(filePath)) return;
+            processed.add(filePath);
+
+            try {
+                const content = await fs.readFile(filePath, 'utf-8');
+                const doc = await getResource({text: content, type: 'xml'});
+
+                // Use XPath to find xsl:import and xsl:include elements
+                const imports = XPath.evaluate("//(xsl:import|xsl:include)/@href/data(.)", doc, {
+                    namespaceContext: {xsl: 'http://www.w3.org/1999/XSL/Transform'},
+                    resultForm: 'array'
+                });
+
+                for (const href of imports) {
+                    const resolvedPath = path.resolve(path.dirname(filePath), href);
+                    allDependencies.add(resolvedPath);
+                    await processFile(resolvedPath); // Recursively process dependencies
+                }
+            } catch (error) {
+                console.warn(`Could not parse XSLT dependencies from ${filePath}:`, error);
+            }
+        }
+
+        await processFile(xsltPath);
+        return Array.from(allDependencies);
     }
 }
 
