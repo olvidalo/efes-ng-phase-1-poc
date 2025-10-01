@@ -32,8 +32,8 @@ export class CompileStylesheetNode extends PipelineNode<CompileStylesheetConfig,
                 context.log(`Compiling ${item} to ${sefPath}`);
 
                 // Extract XSLT dependencies before compilation
-                const implicitDependencies = await this.extractXsltDependencies(item);
-                context.log(`  Found ${implicitDependencies.length} dependencies: ${JSON.stringify(implicitDependencies)}`);
+                const discoveredDependencies = await this.extractXsltDependencies(item);
+                context.log(`  Found ${discoveredDependencies.length} dependencies: ${JSON.stringify(discoveredDependencies)}`);
 
                 try {
                     await new Promise<void>((resolve, reject) => {
@@ -80,7 +80,7 @@ export class CompileStylesheetNode extends PipelineNode<CompileStylesheetConfig,
                         });
                     });
 
-                    return {implicitDependencies};
+                    return {discoveredDependencies};
                 } catch (err: any) {
                     throw new Error(`Failed to compile XSL: ${err.message}`);
                 }

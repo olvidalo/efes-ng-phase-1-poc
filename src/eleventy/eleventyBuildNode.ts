@@ -50,8 +50,9 @@ export class EleventyBuildNode extends PipelineNode<EleventyBuildConfig, "built"
 
         // Initialize Eleventy
         const elev = new Eleventy(sourceDir, outputDir, {
-            ...this.config.eleventyConfig
+            ...this.config.eleventyConfig,
         });
+
 
         // Run the build
         await elev.write();

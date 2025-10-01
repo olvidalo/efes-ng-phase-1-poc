@@ -46,12 +46,12 @@ interface CacheEntry {
   dependencies: Record<string, { path: string; hash: string }>;
 
   /**
-   * Implicit dependencies discovered at runtime.
+   * Discovered dependencies found at runtime.
    * Files accessed via document() calls in XSLT transformations.
    * Tracked transparently to ensure cache invalidation when these change.
    * Map: filePath -> hash
    */
-  implicitDependencies?: Record<string, string>;
+  discoveredDependencies?: Record<string, string>;
 
   /**
    * When this cache entry was created.
@@ -166,10 +166,10 @@ export class CacheManager {
       }
     }
 
-    // Check all dependencies (explicit and implicit)
+    // Check all dependencies (explicit and discovered)
     const allDeps = [
       ...Object.entries(entry.dependencies).map(([name, info]) => ({ path: info.path, hash: info.hash })),
-      ...Object.entries(entry.implicitDependencies || {}).map(([path, hash]) => ({ path, hash }))
+      ...Object.entries(entry.discoveredDependencies || {}).map(([path, hash]) => ({ path, hash }))
     ];
 
     for (const { path, hash } of allDeps) {
@@ -279,7 +279,7 @@ export class CacheManager {
     outputPaths: string[],
     dependencies: Record<string, { path: string; hash: string }>,
     itemKey: string,
-    implicitDependencies?: string[]
+    discoveredDependencies?: string[]
   ): Promise<CacheEntry> {
     const inputHashes: Record<string, string> = {};
     const inputTimestamps: Record<string, number> = {};
@@ -294,14 +294,14 @@ export class CacheManager {
       inputTimestamps[inputPath] = stats.mtimeMs;
     }
 
-    // Compute hashes for implicit dependencies if provided
-    const implicitDeps: Record<string, string> = {};
-    if (implicitDependencies) {
-      for (const path of implicitDependencies) {
+    // Compute hashes for discovered dependencies if provided
+    const discoveredDeps: Record<string, string> = {};
+    if (discoveredDependencies) {
+      for (const path of discoveredDependencies) {
         try {
-          implicitDeps[path] = await this.computeFileHash(path);
+          discoveredDeps[path] = await this.computeFileHash(path);
         } catch {
-          // If we can't hash an implicit dependency, skip it
+          // If we can't hash a discovered dependency, skip it
           // (it might not exist yet or be optional)
         }
       }
@@ -313,7 +313,7 @@ export class CacheManager {
       inputTimestamps,
       outputPaths,
       dependencies,
-      ...(Object.keys(implicitDeps).length > 0 && { implicitDependencies: implicitDeps }),
+      ...(Object.keys(discoveredDeps).length > 0 && { discoveredDependencies: discoveredDeps }),
       timestamp: Date.now(),
       itemKey
     };

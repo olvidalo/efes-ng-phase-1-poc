@@ -13,7 +13,7 @@ function inputIsNodeOutputReference(input: Input): input is NodeOutputReference 
 }
 
 export type Input = string | string[] | NodeOutputReference;
-type NodeOutput<TKey extends string> = Record<TKey, string[]>;
+export type NodeOutput<TKey extends string> = Record<TKey, string[]>;
 
 export function from<TNode extends PipelineNode<any, TOutput>, TOutput extends string>(node: TNode, output: TOutput): NodeOutputReference {
     return {node, name: output as string};
@@ -25,11 +25,6 @@ export interface PipelineNodeConfig {
     explicitDependencies?: string[];
 }
 
-export interface NodeRequest {
-    node: PipelineNode<any, any>;
-    outputReference: string;
-    replaceInput: string;
-}
 
 export abstract class PipelineNode<TConfig extends PipelineNodeConfig = PipelineNodeConfig, TOutput extends string = string> {
     constructor(public readonly config: TConfig) {
@@ -43,9 +38,11 @@ export abstract class PipelineNode<TConfig extends PipelineNodeConfig = Pipeline
         return this.config.inputs;
     }
 
-    async analyze(context: PipelineContext): Promise<NodeRequest[]> {
-        return [];
-    }
+    /**
+     * Optional lifecycle hook called when this node is added to a pipeline.
+     * Composite nodes can use this to expand their internal nodes.
+     */
+    onAddedToPipeline?(pipeline: Pipeline): void;
 
     abstract run(context: PipelineContext): Promise<NodeOutput<TOutput>[]>;
 
@@ -55,7 +52,7 @@ export abstract class PipelineNode<TConfig extends PipelineNodeConfig = Pipeline
         items: string[],
         getCacheKey: (item: string) => string,
         getOutputPath: (item: string) => string,
-        performWork: (item: string) => Promise<T | { result?: T, implicitDependencies?: string[] } | void>
+        performWork: (item: string) => Promise<T | { result?: T, discoveredDependencies?: string[] } | void>
     ): Promise<Array<{ item: string, output: string, cached: boolean, result?: T }>> {
         // Auto-detect dependencies from from() inputs
         const deps: Record<string, { path: string, hash: string }> = {};
@@ -111,19 +108,19 @@ export abstract class PipelineNode<TConfig extends PipelineNodeConfig = Pipeline
 
             // Handle different return types
             let result: T | undefined;
-            let implicitDependencies: string[] | undefined;
+            let discoveredDependencies: string[] | undefined;
 
-            if (processed && typeof processed === 'object' && 'implicitDependencies' in processed) {
-                // Object with implicit dependencies
+            if (processed && typeof processed === 'object' && 'discoveredDependencies' in processed) {
+                // Object with discovered dependencies
                 result = processed.result;
-                implicitDependencies = processed.implicitDependencies;
+                discoveredDependencies = processed.discoveredDependencies;
             } else {
                 // Simple result value or void
                 result = processed as T;
             }
 
             const cacheEntry = await context.cache.buildCacheEntry(
-                [item], [outputPath], deps, cacheKey, implicitDependencies
+                [item], [outputPath], deps, cacheKey, discoveredDependencies
             );
             await context.cache.setCache(this.name, cacheKey, cacheEntry);
 
@@ -162,6 +159,12 @@ export class Pipeline {
 
     addNode(node: PipelineNode<any, any>): this {
         this.graph.addNode(node.name, node);
+
+        // Call lifecycle hook if it exists
+        if (node.onAddedToPipeline) {
+            node.onAddedToPipeline(this);
+        }
+
         return this;
     }
 
@@ -211,7 +214,7 @@ export class Pipeline {
     }
 
     private setupInputDependencies() {
-        // Setup input-based dependencies after analyze
+        // Setup input-based dependencies from from() references
         for (const nodeName of this.graph.overallOrder()) {
             const node = this.graph.getNodeData(nodeName);
 
@@ -229,63 +232,6 @@ export class Pipeline {
         }
     }
 
-    private async analyze() {
-        const context: PipelineContext = {
-            resolveInput: async (input: Input): Promise<string[]> => {
-                // Node references won't work during analysis since nodes haven't run yet
-                if (inputIsNodeOutputReference(input)) {
-                    return []; // Skip node references during analysis
-                }
-
-                // File paths and arrays work fine
-                if (typeof input === "string") {
-                    const results = await glob(input)
-                    return results.length > 0 ? results : [input]; // Return original if no matches
-                }
-
-                if (Array.isArray(input)) {
-                    const results: string[] = [];
-                    for (const item of input) {
-                        results.push(...(await context.resolveInput(item)))
-                    }
-                    return results;
-                }
-
-                return []
-            },
-            log: () => {
-            }, // Silent during analysis
-            cache: this.cache,
-            buildDir: this.buildDir,
-            getBuildPath: (nodeName: string, inputPath: string, newExtension?: string): string => {
-                const relativePath = path.relative(process.cwd(), inputPath);
-                const buildPath = path.join(this.buildDir, nodeName, relativePath);
-                return newExtension ?
-                    buildPath.replace(path.extname(buildPath), newExtension) :
-                    buildPath;
-            },
-            getNodeOutputs: () => undefined // No outputs during analysis phase
-        }
-
-        const nodesToAnalyze = this.graph.overallOrder();
-
-        for (const nodeName of nodesToAnalyze) {
-            const node = this.graph.getNodeData(nodeName);
-
-            const requests = await node.analyze(context);
-
-            for (const request of requests) {
-                // Add the requested node
-                this.addNode(request.node);
-
-                // Immediately set up dependency: original node depends on auto-compile node
-                this.graph.addDependency(node.name, request.node.name);
-
-                // Update the original node's inputs to reference the new node's output
-                node.config.inputs[request.replaceInput] = from(request.node, request.outputReference);
-            }
-        }
-    }
 
     async run() {
         console.log(`Running pipeline ${this.name}`);
@@ -294,10 +240,7 @@ export class Pipeline {
         // 1. Setup explicit dependencies first
         this.setupExplicitDependencies();
 
-        // 2. Run analyze() - auto-compile nodes created in correct order
-        await this.analyze();
-
-        // 3. Setup input-based dependencies (from auto-compile and from() references)
+        // 2. Setup input-based dependencies (from from() references)
         this.setupInputDependencies();
 
         const executionOrder = this.graph.overallOrder();
@@ -307,8 +250,8 @@ export class Pipeline {
 
                 // Node references
                 if (inputIsNodeOutputReference(input)) {
-                    const outputs = this.nodeOutputs.get(input.node.name)?.flatMap(output => output[input.name]);
-                    if (!outputs) {
+                    const outputs = this.nodeOutputs.get(input.node.name)?.flatMap(output => output[input.name]).filter(x => x !== undefined);
+                    if (!outputs || outputs.length === 0) {
                         throw new Error(`Node "${input.node.name}" hasn't run yet or has not produced any outputs.`);
                     }
                     return outputs
@@ -353,7 +296,7 @@ export class Pipeline {
 
             try {
                 const output = await node.run(context);
-                context.log(`  → Generated: ${JSON.stringify(output)}`);
+                // context.log(`  → Generated: ${JSON.stringify(output)}`);
 
                 this.nodeOutputs.set(node.name, output);
                 context.log(`  - Completed: ${node.name}`);
