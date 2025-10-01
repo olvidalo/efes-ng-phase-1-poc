@@ -2,6 +2,7 @@ import {DepGraph} from "dependency-graph";
 import {CacheManager} from "./cache";
 import {glob} from "glob";
 import path from "node:path";
+import crypto from "node:crypto";
 
 interface NodeOutputReference {
     node: PipelineNode<any, any>;
@@ -46,6 +47,37 @@ export abstract class PipelineNode<TConfig extends PipelineNodeConfig = Pipeline
 
     abstract run(context: PipelineContext): Promise<NodeOutput<TOutput>[]>;
 
+    /**
+     * Generate a content signature for this node based on its configuration and inputs.
+     * Nodes with identical signatures can share cache entries.
+     */
+    protected async getContentSignature(context: PipelineContext): Promise<string> {
+        const inputHashes: string[] = [];
+
+        // Include hashes of all inputs (both direct files and resolved from() references)
+        for (const [inputName, input] of Object.entries(this.inputs)) {
+            const resolvedPaths = await context.resolveInput(input);
+            for (const filePath of resolvedPaths) {
+                inputHashes.push(await context.cache.computeFileHash(filePath));
+            }
+        }
+
+        // Include serialized configuration
+        const configForHashing = {
+            ...this.config,
+            inputs: undefined, // Remove inputs from config hash since we handle them separately above
+            name: undefined    // Remove name from config hash since it's just an identifier, not content
+        };
+        const configString = JSON.stringify(configForHashing, Object.keys(configForHashing).sort());
+
+        // Combine all data and hash
+        const combined = [...inputHashes.sort(), configString].join('|');
+        const hash = crypto.createHash('sha256').update(combined).digest('hex');
+
+        // Return human-readable signature: ClassName-hash8chars
+        return `${this.constructor.name}-${hash.substring(0, 8)}`;
+    }
+
     // Unified caching for single or multiple items
     protected async withCache<T>(
         context: PipelineContext,
@@ -54,42 +86,11 @@ export abstract class PipelineNode<TConfig extends PipelineNodeConfig = Pipeline
         getOutputPath: (item: string) => string,
         performWork: (item: string) => Promise<T | { result?: T, discoveredDependencies?: string[] } | void>
     ): Promise<Array<{ item: string, output: string, cached: boolean, result?: T }>> {
-        // Auto-detect dependencies from from() inputs
-        const deps: Record<string, { path: string, hash: string }> = {};
-        for (const [inputName, input] of Object.entries(this.inputs)) {
-            if (inputIsNodeOutputReference(input)) {
-                const resolvedPaths = await context.resolveInput(input);
-                if (resolvedPaths.length > 0) {
-                    deps[inputName] = {
-                        path: resolvedPaths[0],
-                        hash: await context.cache.computeFileHash(resolvedPaths[0])
-                    };
-                }
-            }
-        }
-
-        // Auto-detect dependencies from explicit dependencies
-        if (this.config.explicitDependencies) {
-            for (const depNodeName of this.config.explicitDependencies) {
-                const depOutputs = context.getNodeOutputs(depNodeName);
-                if (depOutputs) {
-                    let fileIndex = 0;
-                    for (const outputObj of depOutputs) {
-                        for (const [outputKey, fileArray] of Object.entries(outputObj)) {
-                            for (const filePath of fileArray) {
-                                deps[`${depNodeName}-${outputKey}-${fileIndex++}`] = {
-                                    path: filePath,
-                                    hash: await context.cache.computeFileHash(filePath)
-                                };
-                            }
-                        }
-                    }
-                }
-            }
-        }
+        // Get content signature for cache sharing
+        const contentSignature = await this.getContentSignature(context);
 
         const cacheKeys = items.map(getCacheKey);
-        await context.cache.cleanExcept(this.name, cacheKeys);
+        await context.cache.cleanExcept(contentSignature, cacheKeys);
 
         const results = [];
         for (let i = 0; i < items.length; i++) {
@@ -97,10 +98,15 @@ export abstract class PipelineNode<TConfig extends PipelineNodeConfig = Pipeline
             const cacheKey = cacheKeys[i];
             const outputPath = getOutputPath(item);
 
-            const cached = await context.cache.getCache(this.name, cacheKey);
+            const cached = await context.cache.getCache(contentSignature, cacheKey);
             if (cached && await context.cache.isValid(cached)) {
                 context.log(`  - Skipping: ${item} (cached)`);
-                results.push({item, output: cached.outputPaths[0], cached: true});
+                // Copy cached output to expected build path if different
+                const expectedOutputPath = getOutputPath(item);
+                if (cached.outputPaths[0] !== expectedOutputPath) {
+                    await context.cache.copyToExpectedPath(cached.outputPaths[0], expectedOutputPath);
+                }
+                results.push({item, output: expectedOutputPath, cached: true});
                 continue;
             }
 
@@ -120,13 +126,9 @@ export abstract class PipelineNode<TConfig extends PipelineNodeConfig = Pipeline
             }
 
             const cacheEntry = await context.cache.buildCacheEntry(
-                [item], [outputPath], deps, cacheKey, discoveredDependencies
+                [item], [outputPath], cacheKey, discoveredDependencies
             );
-            await context.cache.setCache(this.name, cacheKey, cacheEntry);
-
-            if (this.config.explicitDependencies?.length) {
-                context.log(`  - Cached with ${Object.keys(deps).length} dependencies (including ${this.config.explicitDependencies.length} explicit)`);
-            }
+            await context.cache.setCache(contentSignature, cacheKey, cacheEntry);
 
             results.push({item, output: outputPath, cached: false, result});
         }
@@ -149,12 +151,14 @@ export interface PipelineContext {
 export class Pipeline {
     private graph = new DepGraph<PipelineNode>();
     private nodeOutputs = new Map<string, NodeOutput<any>[]>;
-    private cache = new CacheManager();
+    private cache: CacheManager;
 
     constructor(
         public readonly name: string,
-        public readonly buildDir: string = '.efes-build'
+        public readonly buildDir: string = '.efes-build',
+        public readonly cacheDir: string = '.efes-cache'
     ) {
+        this.cache = new CacheManager(cacheDir);
     }
 
     addNode(node: PipelineNode<any, any>): this {
@@ -308,5 +312,13 @@ export class Pipeline {
         }
 
         context.log(`Pipeline completed.`);
+    }
+
+    /**
+     * Get the outputs of a specific node after pipeline execution.
+     * Returns undefined if the node hasn't run yet or doesn't exist.
+     */
+    getNodeOutputs(nodeName: string): NodeOutput<any>[] | undefined {
+        return this.nodeOutputs.get(nodeName);
     }
 }

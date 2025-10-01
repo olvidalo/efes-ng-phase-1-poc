@@ -86,11 +86,16 @@ export class CacheManager {
   }
 
   /**
-   * Retrieve a cache entry for a specific node and item.
+   * Retrieve a cache entry for a specific content signature and item.
    * Returns null if entry doesn't exist or can't be read.
+   *
+   * Note: Considered separate cache entries per requesting node (with node names in filenames)
+   * for better debugging provenance, but opted for shared entries with runtime copying to keep
+   * the cache simple and avoid file duplication. This decision could be revisited if debugging
+   * benefits outweigh the architectural simplicity.
    */
-  async getCache(nodeName: string, itemKey: string): Promise<CacheEntry | null> {
-    const cachePath = this.getCachePath(nodeName, itemKey);
+  async getCache(contentSignature: string, itemKey: string): Promise<CacheEntry | null> {
+    const cachePath = this.getCachePath(contentSignature, itemKey);
 
     try {
       const content = await fs.readFile(cachePath, 'utf-8');
@@ -102,11 +107,11 @@ export class CacheManager {
   }
 
   /**
-   * Store a cache entry for a specific node and item.
+   * Store a cache entry for a specific content signature and item.
    * Creates necessary directories if they don't exist.
    */
-  async setCache(nodeName: string, itemKey: string, entry: CacheEntry): Promise<void> {
-    const cachePath = this.getCachePath(nodeName, itemKey);
+  async setCache(contentSignature: string, itemKey: string, entry: CacheEntry): Promise<void> {
+    const cachePath = this.getCachePath(contentSignature, itemKey);
     const cacheNodeDir = path.dirname(cachePath);
 
     // Ensure cache directory exists
@@ -195,35 +200,35 @@ export class CacheManager {
    * Example: If *.xml previously matched 3 files but now matches 2,
    * this removes the cache entry for the deleted file.
    */
-  async cleanExcept(nodeName: string, currentItemKeys: string[]): Promise<void> {
-    const nodeDir = path.join(this.cacheDir, this.sanitizeNodeName(nodeName));
+  async cleanExcept(contentSignature: string, currentItemKeys: string[]): Promise<void> {
+    const signatureDir = path.join(this.cacheDir, this.sanitizeNodeName(contentSignature));
 
     try {
-      const entries = await fs.readdir(nodeDir);
+      const entries = await fs.readdir(signatureDir);
       const currentKeysSet = new Set(currentItemKeys.map(k => `${this.sanitizeKey(k)}.json`));
 
       for (const entry of entries) {
         if (!currentKeysSet.has(entry)) {
           // This cache entry is no longer needed
-          const orphanPath = path.join(nodeDir, entry);
+          const orphanPath = path.join(signatureDir, entry);
           await fs.unlink(orphanPath);
         }
       }
     } catch (error) {
-      // Node directory doesn't exist yet - nothing to clean
+      // Signature directory doesn't exist yet - nothing to clean
     }
   }
 
   /**
-   * Clear cache for a specific node or all nodes.
+   * Clear cache for a specific content signature or all cache.
    * Useful for manual cache invalidation or debugging.
    */
-  async clear(nodeName?: string): Promise<void> {
-    if (nodeName) {
-      // Clear specific node's cache
-      const nodeDir = path.join(this.cacheDir, this.sanitizeNodeName(nodeName));
+  async clear(contentSignature?: string): Promise<void> {
+    if (contentSignature) {
+      // Clear specific signature's cache
+      const signatureDir = path.join(this.cacheDir, this.sanitizeNodeName(contentSignature));
       try {
-        await fs.rm(nodeDir, { recursive: true, force: true });
+        await fs.rm(signatureDir, { recursive: true, force: true });
       } catch {
         // Directory doesn't exist - already clear
       }
@@ -235,6 +240,18 @@ export class CacheManager {
         // Cache directory doesn't exist - already clear
       }
     }
+  }
+
+  /**
+   * Copy a cached output file to the expected build path when cache is shared
+   * between nodes with different output paths.
+   */
+  async copyToExpectedPath(sourcePath: string, expectedPath: string): Promise<void> {
+    // Ensure destination directory exists
+    await fs.mkdir(path.dirname(expectedPath), { recursive: true });
+
+    // Copy the cached file to expected location
+    await fs.copyFile(sourcePath, expectedPath);
   }
 
   /**
@@ -259,12 +276,14 @@ export class CacheManager {
     const combined = paths.sort().join('|');
     const hash = crypto.createHash('sha256').update(combined).digest('hex');
 
-    // Create human-readable prefix from first path
-    const prefix = paths[0]
+    // Create human-readable prefix from first path (use basename to avoid long paths)
+    const basename = path.basename(paths[0]);
+    const prefix = basename
       .replace(/[^a-zA-Z0-9]/g, '-')
       .replace(/-+/g, '-')
       .replace(/^-|-$/g, '')
-      .toLowerCase();
+      .toLowerCase()
+      .substring(0, 50); // Limit prefix length
 
     // Combine prefix with hash snippet for uniqueness
     return `${prefix}-${hash.substring(0, 8)}`;
@@ -277,7 +296,6 @@ export class CacheManager {
   async buildCacheEntry(
     inputPaths: string[],
     outputPaths: string[],
-    dependencies: Record<string, { path: string; hash: string }>,
     itemKey: string,
     discoveredDependencies?: string[]
   ): Promise<CacheEntry> {
@@ -312,7 +330,7 @@ export class CacheManager {
       inputHashes,
       inputTimestamps,
       outputPaths,
-      dependencies,
+      dependencies: {}, // Keep for backward compatibility with existing cache entries
       ...(Object.keys(discoveredDeps).length > 0 && { discoveredDependencies: discoveredDeps }),
       timestamp: Date.now(),
       itemKey
@@ -322,20 +340,23 @@ export class CacheManager {
   /**
    * Get the filesystem path for a cache entry.
    */
-  private getCachePath(nodeName: string, itemKey: string): string {
-    const safeNodeName = this.sanitizeNodeName(nodeName);
+  private getCachePath(contentSignature: string, itemKey: string): string {
+    const safeSignature = this.sanitizeNodeName(contentSignature);
     const safeItemKey = this.sanitizeKey(itemKey);
-    return path.join(this.cacheDir, safeNodeName, `${safeItemKey}.json`);
+    return path.join(this.cacheDir, safeSignature, `${safeItemKey}.json`);
   }
 
   private sanitizeKey(key: string): string {
     // Replace path separators and other problematic chars
-    return key
+    const sanitized = key
         .replace(/\//g, '-')      // Replace forward slashes
         .replace(/\\/g, '-')      // Replace backslashes
         .replace(/\./g, '_')      // Replace dots (except before extension)
         .replace(/[^a-zA-Z0-9-_]/g, '') // Remove other special chars
         .toLowerCase();
+
+    // Limit filename length to avoid filesystem limits (255 chars - some buffer for .json extension)
+    return sanitized.length > 200 ? sanitized.substring(0, 200) : sanitized;
   }
 
   /**
