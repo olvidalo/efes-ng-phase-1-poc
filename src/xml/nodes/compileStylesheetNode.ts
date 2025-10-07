@@ -8,28 +8,26 @@ import {getResource, XPath} from 'saxonjs-he';
 
 
 interface CompileStylesheetConfig extends PipelineNodeConfig {
-    name: string;
-    inputs: { xslt: Input };
-    outputFilename?: string;
+    items: Input;  // xslt files to compile
+    config: Record<string, any>;  // No processing config needed
+    outputConfig?: {
+        outputFilename?: string;
+    };
 }
 
 // TODO: need to preserve the original path somehow, maybe
 export class CompileStylesheetNode extends PipelineNode<CompileStylesheetConfig, "compiledStylesheet"> {
     async run(context: PipelineContext) {
-        const xsltPath = await context.resolveInput(this.inputs.xslt);
-        if (xsltPath.length !== 1) throw new Error("Multiple xslt input files not supported");
-
-        const sefPath = this.config.outputFilename ?
-            path.resolve(this.config.outputFilename) :
-            context.getBuildPath(this.name, xsltPath[0], '.sef.json');
+        const xsltPaths = await context.resolveInput(this.items!);
 
         const results = await this.withCache(
             context,
-            xsltPath,
+            xsltPaths,
             (item) => item,
-            () => sefPath,
-            async (item) => {
-                context.log(`Compiling ${item} to ${sefPath}`);
+            (item) => this.config.outputConfig?.outputFilename ??
+                     context.getBuildPath(this.name, item, '.sef.json'),
+            async (item, outputPath) => {
+                context.log(`Compiling ${item} to ${outputPath}`);
 
                 // Extract XSLT dependencies before compilation
                 const discoveredDependencies = await this.extractXsltDependencies(item);
@@ -40,8 +38,8 @@ export class CompileStylesheetNode extends PipelineNode<CompileStylesheetConfig,
                         const xslt3Path = require.resolve('xslt3-he');
 
                         const child = fork(xslt3Path, [
-                            `-xsl:${xsltPath[0]}`,
-                            `-export:${sefPath}`,
+                            `-xsl:${item}`,
+                            `-export:${outputPath}`,
                             // TODO: find out whether we should rather produce relocatable stylesheets
                             //       and have the user provide the base URI in the xslt transform node configuration
                             // '-relocate:on',
@@ -68,7 +66,7 @@ export class CompileStylesheetNode extends PipelineNode<CompileStylesheetConfig,
 
                         child.on('close', (code) => {
                             if (code === 0) {
-                                console.log(`Successfully compiled: ${path.basename(sefPath)}`);
+                                console.log(`Successfully compiled: ${path.basename(outputPath)}`);
                                 resolve();
                             } else {
                                 reject(new Error(`XSLT compilation failed with exit code ${code}\nstderr: ${stderr}`));
@@ -87,7 +85,9 @@ export class CompileStylesheetNode extends PipelineNode<CompileStylesheetConfig,
             }
         );
 
-        return [{compiledStylesheet: [results[0].output]}];
+        return results.map(r => ({
+            compiledStylesheet: [r.output]
+        }));
     }
 
     private async extractXsltDependencies(xsltPath: string): Promise<string[]> {

@@ -1,5 +1,7 @@
 import {
+    type FileRef,
     type Input,
+    inputIsNodeOutputReference,
     type PipelineContext,
     PipelineNode,
     type PipelineNodeConfig
@@ -9,11 +11,9 @@ import fs from "node:fs/promises";
 import fsSync from "node:fs";
 
 // @ts-ignore
-import {transform} from 'saxonjs-he';
-
 // Register Kiln extension functions at module load
 // @ts-ignore
-import SaxonJS from 'saxonjs-he';
+import SaxonJS, {transform} from 'saxonjs-he';
 
 // Register the kiln:url-for-match function implementation
 SaxonJS.registerExtensionFunctions({
@@ -23,7 +23,7 @@ SaxonJS.registerExtensionFunctions({
             "as": "xs:string",
             "param": ["xs:string", "xs:string*", "xs:integer"],
             "arity": [3],
-            "impl": function(matchId: string, params: any, priority: number): string {
+            "impl":  function(matchId: string, params: any, priority: number): string {
                 // Simple implementation: generate static URLs based on parameters
                 // matchId is like 'local-epidoc-display-html'
                 // params is an iterator of [language, filename]
@@ -33,14 +33,16 @@ SaxonJS.registerExtensionFunctions({
                 const language = paramArray[0] || 'en';
                 const filename = paramArray[1] || 'unknown';
 
-                if (matchId === 'local-epidoc-display-html') {
-                    const result = `/${language}/inscriptions/${filename}.html`;
-                    console.log(`RETURNING ABSOLUTE: ${result}`);
-                    return result;
-                }
+                const routePatterns: Record<string, string> = {
+                    'local-epidoc-display-html': `/${language}/inscriptions/${filename}.html`,
+                    'local-epidoc-index-display': `/${language}/inscriptions/`,
+                    'local-tei-display-html': `/${language}/texts/${filename}.html`,
+                    'local-home-page': `/${language}/`,
+                    'local-concordance-bibliography': `/${language}/concordances/bibliography/`,
+                    'local-index-display-html': `/${language}/indices/${paramArray[1]}/${paramArray[2]}.html`,
+                };
 
-                // Fallback for other match IDs
-                return `/${language}/${filename}.html`;
+                return routePatterns[matchId] || `/${language}/${filename}.html`;
             }
         }
     }
@@ -48,39 +50,42 @@ SaxonJS.registerExtensionFunctions({
 
 
 interface SefTransformConfig extends PipelineNodeConfig {
-    inputs: {
-        sefStylesheet: Input;
-        sourceXml?: Input;
+    items?: Input;  // sourceXml files (optional for no-source transforms)
+    config: {
+        sefStylesheet: FileRef | Input;  // Can be FileRef or NodeOutputReference
+        initialTemplate?: string;
+        stylesheetParams?: Record<string, any | ((inputPath: string) => any)>;
+        // TODO: passing {indent: false} indents anyway
+        serializationParams?: Record<string, any>;
+        initialMode?: string;
     };
-    outputFilenameMapping?: (inputPath: string) => string;
-    resultDocumentsDir?: string;
-    initialTemplate?: string;
-    stylesheetParams?: Record<string, any | ((inputPath: string) => any)>;
-    initialMode?: string;
+    outputConfig?: {
+        outputFilenameMapping?: (inputPath: string) => string;
+        resultDocumentsDir?: string;
+        resultExtension?: string;
+    };
 }
+
 
 export class SefTransformNode extends PipelineNode<SefTransformConfig, "transformed" | "result-documents"> {
 
-    private defaultOutputFilenameMapping = (inputPath: string) => {
-        const inputFilename = path.basename(inputPath);
-        const inputDirname = path.dirname(inputPath);
-        const inputBasename = path.basename(inputFilename, path.extname(inputFilename));
-        return path.join(inputDirname, inputBasename + '.html');
-    }
-
     async run(context: PipelineContext) {
-        const sefStylesheetPath = (await context.resolveInput(this.inputs.sefStylesheet))[0];
+        // Handle both FileRef and Input (NodeOutputReference) for sefStylesheet
+        const sefStylesheetPath = (this.config.config.sefStylesheet as any).path
+            ? (this.config.config.sefStylesheet as FileRef).path
+            : (await context.resolveInput(this.config.config.sefStylesheet as Input))[0];
 
         // Handle no-source mode (stylesheet uses document() for input)
-        const sourcePaths = this.inputs.sourceXml ?
-            await context.resolveInput(this.inputs.sourceXml) :
+        const sourcePaths = this.items ?
+            await context.resolveInput(this.items) :
             [sefStylesheetPath];
 
-        const isNoSourceMode = !this.inputs.sourceXml;
+        const isNoSourceMode = !this.items;
         context.log(`${isNoSourceMode ? 'Running stylesheet' : `Transforming ${sourcePaths.length} file(s)`} with ${sefStylesheetPath}`);
 
-        const outputFilenameMapper = this.config.outputFilenameMapping ??
-            ((inputPath: string) => context.getBuildPath(this.name, inputPath, '.html'));
+        const outputFilenameMapper = this.config.outputConfig?.outputFilenameMapping ?
+            ((inputPath: string) => this.config.outputConfig!.outputFilenameMapping!(context.stripBuildPrefix(inputPath))) :
+            ((inputPath: string) => context.getBuildPath(this.name, inputPath, this.config.outputConfig?.resultExtension ??'.html'));
 
         const platform = SaxonJS.internals.getPlatform();
 
@@ -121,9 +126,10 @@ export class SefTransformNode extends PipelineNode<SefTransformConfig, "transfor
             sourcePaths,
             (item) => isNoSourceMode ? `no-source-${sefStylesheetPath}` : `${item}-with-${sefStylesheetPath}`,
             (item) => isNoSourceMode ?
-                (this.config.outputFilenameMapping?.(sefStylesheetPath) ?? context.getBuildPath(this.name, sefStylesheetPath, '.html')) :
+                (this.config.outputConfig?.outputFilenameMapping?.(sefStylesheetPath) ??
+                 context.getBuildPath(this.name, sefStylesheetPath, this.config.outputConfig?.resultExtension ?? '.html')) :
                 outputFilenameMapper(item),
-            async (sourcePath) => {
+            async (sourcePath, outputPath) => {
 
                 // TODO: maybe we can get document() calls from SaxonJs getPlatform().readFile
                 const transformOptions: any = {
@@ -147,9 +153,13 @@ export class SefTransformNode extends PipelineNode<SefTransformConfig, "transfor
                         context.log(`  - Collection finder: ${results.length} files found`);
                         return results
                     },
-                    ...this.config.initialTemplate ? {initialTemplate: this.config.initialTemplate} : {},
-                    ...this.config.stylesheetParams ? {stylesheetParams: this.resolveStylesheetParams(sourcePath)} : {},
-                    ...this.config.initialMode ? {initialMode: this.config.initialMode} : {},
+                    deliverResultDocument: () => ({
+                        destination: "serialized",
+                    }),
+                    ...this.config.config.initialTemplate ? {initialTemplate: this.config.config.initialTemplate} : {},
+                    ...this.config.config.stylesheetParams ? {stylesheetParams: await this.resolveStylesheetParams(context, sourcePath)} : {},
+                    ...this.config.config.initialMode ? {initialMode: this.config.config.initialMode} : {},
+                    ...this.config.config.serializationParams ? {outputProperties: this.config.config.serializationParams} : {},
                 };
 
                 if (!isNoSourceMode) {
@@ -157,9 +167,6 @@ export class SefTransformNode extends PipelineNode<SefTransformConfig, "transfor
                 }
 
                 const result = await transform(transformOptions);
-                const outputPath = isNoSourceMode ?
-                    (this.config.outputFilenameMapping?.(sefStylesheetPath) ?? sefStylesheetPath.replace('.sef.json', '.html')) :
-                    outputFilenameMapper(sourcePath);
 
                 // Ensure directory exists before writing
                 await fs.mkdir(path.dirname(outputPath), { recursive: true });
@@ -174,13 +181,15 @@ export class SefTransformNode extends PipelineNode<SefTransformConfig, "transfor
         }));
     }
 
-    private resolveStylesheetParams(sourcePath: string): Record<string, any> {
-        if (!this.config.stylesheetParams) return {};
+    private async resolveStylesheetParams(context: PipelineContext, sourcePath: string): Promise<Record<string, any>> {
+        if (!this.config.config.stylesheetParams) return {};
 
         const resolved: Record<string, any> = {};
-        for (const [key, value] of Object.entries(this.config.stylesheetParams)) {
+        for (const [key, value] of Object.entries(this.config.config.stylesheetParams)) {
             if (typeof value === 'function') {
                 resolved[key] = value(sourcePath);
+            } else if (inputIsNodeOutputReference(value)) {
+                resolved[key] = await context.resolveInput(value);
             } else {
                 resolved[key] = value;
             }

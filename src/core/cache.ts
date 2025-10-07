@@ -4,65 +4,37 @@ import * as crypto from "node:crypto";
 
 /**
  * CacheEntry represents a single cached computation result.
+ * Uses unified file tracking for all types of dependencies.
  */
 interface CacheEntry {
   /**
-   * Input file paths that were processed to create this cache entry.
-   * Used to identify which files this cache entry represents.
-   * Example: ['scratch/book.xml'] or ['book-to-html.xsl']
-   */
-  inputPaths: string[];
-
-  /**
-   * Content hash of each input file at the time of caching.
-   * Primary mechanism for detecting if file content has changed.
-   * Even if timestamps lie (git operations, copies), hashes tell the truth.
-   * Map: filePath -> SHA256 hash
-   */
-  inputHashes: Record<string, string>;
-
-  /**
-   * Last modified timestamp of each input file at the time of caching.
-   * Used for fast invalidation check before expensive hashing.
-   * If timestamp unchanged, we skip rehashing (optimization).
-   * Map: filePath -> milliseconds since epoch
-   */
-  inputTimestamps: Record<string, number>;
-
-  /**
    * Output file paths that were generated.
    * Used to verify outputs still exist before claiming cache hit.
-   * If user deletes output file, cache must regenerate it.
    * Example: ['scratch/book.html']
    */
   outputPaths: string[];
 
   /**
-   * Upstream dependencies (not direct file inputs) with their paths and hashes.
-   * Example: For XsltTransformNode, this includes the compiled stylesheet.
-   * When dependencies change, this cache entry is invalidated.
-   * Map: dependencyName -> { path: string, hash: string }
+   * Unified file tracking - ALL files tracked with same logic.
+   * Includes items, fileRefs, and discovered dependencies.
+   * Map: filePath -> { hash, timestamp, source }
    */
-  dependencies: Record<string, { path: string; hash: string }>;
-
-  /**
-   * Discovered dependencies found at runtime.
-   * Files accessed via document() calls in XSLT transformations.
-   * Tracked transparently to ensure cache invalidation when these change.
-   * Map: filePath -> hash
-   */
-  discoveredDependencies?: Record<string, string>;
+  trackedFiles: {
+    [filePath: string]: {
+      hash: string;
+      timestamp: number;
+      source: 'item' | 'fileRef' | 'discovered' | 'explicit';
+    }
+  };
 
   /**
    * When this cache entry was created.
-   * Used for debugging ("why did this rebuild?") and potential TTL expiry.
    * Milliseconds since epoch.
    */
   timestamp: number;
 
   /**
    * The key this entry is stored under.
-   * Helps with debugging and cache management.
    * Example: 'book.xml-a3f2b1' or 'stylesheet-compile-2af3e5'
    */
   itemKey: string;
@@ -127,66 +99,43 @@ export class CacheManager {
 
   /**
    * Validate if a cache entry is still valid.
+   * Uses unified validation for all tracked files.
    *
    * Two-tier checking:
    * 1. Check if all output files exist
-   * 2. Check if input files changed (timestamp → hash)
+   * 2. Check if tracked files changed (timestamp → hash)
    *
    * Returns false if any validation check fails.
    */
   async isValid(entry: CacheEntry): Promise<boolean> {
-    // First, verify all output files still exist
+    // 1. Check all output files exist
     for (const outputPath of entry.outputPaths) {
       try {
         await fs.access(outputPath);
       } catch {
-        // Output file missing - cache invalid
-        return false;
+        return false; // Output missing
       }
     }
 
-    // Then check each input file
-    for (const inputPath of entry.inputPaths) {
+    // 2. Check ALL tracked files with unified logic
+    for (const [filePath, fileInfo] of Object.entries(entry.trackedFiles)) {
       try {
-        const stats = await fs.stat(inputPath);
-        const currentTimestamp = stats.mtimeMs;
+        const stats = await fs.stat(filePath);
 
-        // Fast path: If timestamp unchanged, assume content unchanged
-        if (currentTimestamp === entry.inputTimestamps[inputPath]) {
-          continue;
+        // Fast path: mtime shortcut
+        if (stats.mtimeMs === fileInfo.timestamp) {
+          continue; // Unchanged
         }
 
-        // Timestamp changed - need to verify content via hash
-        const currentHash = await this.computeFileHash(inputPath);
-        if (currentHash !== entry.inputHashes[inputPath]) {
-          // Content actually changed
-          return false;
+        // Slow path: verify content
+        const currentHash = await this.computeFileHash(filePath);
+        if (currentHash !== fileInfo.hash) {
+          return false; // Content changed
         }
 
-        // Timestamp changed but content identical (e.g., touch command)
-        // Cache is still valid
+        // Timestamp changed but content identical - still valid
       } catch {
-        // Input file no longer exists - cache invalid
-        return false;
-      }
-    }
-
-    // Check all dependencies (explicit and discovered)
-    const allDeps = [
-      ...Object.entries(entry.dependencies).map(([name, info]) => ({ path: info.path, hash: info.hash })),
-      ...Object.entries(entry.discoveredDependencies || {}).map(([path, hash]) => ({ path, hash }))
-    ];
-
-    for (const { path, hash } of allDeps) {
-      try {
-        const currentHash = await this.computeFileHash(path);
-        if (currentHash !== hash) {
-          // Dependency changed - cache invalid
-          return false;
-        }
-      } catch {
-        // Dependency missing - cache invalid
-        return false;
+        return false; // File missing
       }
     }
 
@@ -290,48 +239,64 @@ export class CacheManager {
   }
 
   /**
-   * Helper to build a cache entry with all required metadata.
-   * Computes hashes and timestamps for all input files.
+   * Helper to build a cache entry with unified file tracking.
+   * Computes hashes and timestamps for all files with same logic.
    */
   async buildCacheEntry(
-    inputPaths: string[],
+    itemPaths: string[],
     outputPaths: string[],
     itemKey: string,
-    discoveredDependencies?: string[]
+    discoveredDependencies?: string[],
+    fileRefPaths?: string[]
   ): Promise<CacheEntry> {
-    const inputHashes: Record<string, string> = {};
-    const inputTimestamps: Record<string, number> = {};
+    const trackedFiles: Record<string, {hash: string, timestamp: number, source: 'item' | 'fileRef' | 'discovered' | 'explicit'}> = {};
 
-    // Compute hash and timestamp for each input
-    for (const inputPath of inputPaths) {
-      const [hash, stats] = await Promise.all([
-        this.computeFileHash(inputPath),
-        fs.stat(inputPath)
-      ]);
-      inputHashes[inputPath] = hash;
-      inputTimestamps[inputPath] = stats.mtimeMs;
+    // Track items
+    for (const filePath of itemPaths) {
+      try {
+        const [hash, stats] = await Promise.all([
+          this.computeFileHash(filePath),
+          fs.stat(filePath)
+        ]);
+        trackedFiles[filePath] = { hash, timestamp: stats.mtimeMs, source: 'item' };
+      } catch {
+        // Skip missing files
+      }
     }
 
-    // Compute hashes for discovered dependencies if provided
-    const discoveredDeps: Record<string, string> = {};
-    if (discoveredDependencies) {
-      for (const path of discoveredDependencies) {
+    // Track fileRefs
+    if (fileRefPaths) {
+      for (const filePath of fileRefPaths) {
         try {
-          discoveredDeps[path] = await this.computeFileHash(path);
+          const [hash, stats] = await Promise.all([
+            this.computeFileHash(filePath),
+            fs.stat(filePath)
+          ]);
+          trackedFiles[filePath] = { hash, timestamp: stats.mtimeMs, source: 'fileRef' };
         } catch {
-          // If we can't hash a discovered dependency, skip it
-          // (it might not exist yet or be optional)
+          // Skip missing files
+        }
+      }
+    }
+
+    // Track discovered dependencies
+    if (discoveredDependencies) {
+      for (const filePath of discoveredDependencies) {
+        try {
+          const [hash, stats] = await Promise.all([
+            this.computeFileHash(filePath),
+            fs.stat(filePath)
+          ]);
+          trackedFiles[filePath] = { hash, timestamp: stats.mtimeMs, source: 'discovered' };
+        } catch {
+          // Skip missing discovered dependencies
         }
       }
     }
 
     return {
-      inputPaths,
-      inputHashes,
-      inputTimestamps,
       outputPaths,
-      dependencies: {}, // Keep for backward compatibility with existing cache entries
-      ...(Object.keys(discoveredDeps).length > 0 && { discoveredDependencies: discoveredDeps }),
+      trackedFiles,
       timestamp: Date.now(),
       itemKey
     };

@@ -7,22 +7,39 @@ import crypto from "node:crypto";
 interface NodeOutputReference {
     node: PipelineNode<any, any>;
     name: string;
+    glob?: string;  // Optional glob pattern to filter output files
 }
 
-function inputIsNodeOutputReference(input: Input): input is NodeOutputReference {
+export function inputIsNodeOutputReference(input: Input): input is NodeOutputReference {
     return typeof input === 'object' && 'node' in input && 'name' in input;
 }
 
 export type Input = string | string[] | NodeOutputReference;
 export type NodeOutput<TKey extends string> = Record<TKey, string[]>;
 
-export function from<TNode extends PipelineNode<any, TOutput>, TOutput extends string>(node: TNode, output: TOutput): NodeOutputReference {
-    return {node, name: output as string};
+// File reference type for tracking dependencies in config
+export type FileRef = { type: 'file', path: string };
+
+export function from<TNode extends PipelineNode<any, TOutput>, TOutput extends string>(
+    node: TNode,
+    output: TOutput,
+    glob?: string
+): NodeOutputReference {
+    return {node, name: output as string, glob};
+}
+
+export function fileRef(path: string): FileRef {
+    return { type: 'file', path };
 }
 
 export interface PipelineNodeConfig {
     name: string;
-    inputs: Record<string, Input>;
+    // 0-1 variable input (what to process)
+    items?: Input;
+    // Processing configuration (may contain FileRef values)
+    config: Record<string, any>;
+    // Output settings (excluded from content signature)
+    outputConfig?: Record<string, any>;
     explicitDependencies?: string[];
 }
 
@@ -35,8 +52,9 @@ export abstract class PipelineNode<TConfig extends PipelineNodeConfig = Pipeline
         return this.config.name;
     }
 
-    get inputs(): TConfig["inputs"] {
-        return this.config.inputs;
+
+    get items(): Input | undefined {
+        return this.config.items;
     }
 
     /**
@@ -48,33 +66,40 @@ export abstract class PipelineNode<TConfig extends PipelineNodeConfig = Pipeline
     abstract run(context: PipelineContext): Promise<NodeOutput<TOutput>[]>;
 
     /**
-     * Generate a content signature for this node based on its configuration and inputs.
+     * Generate a content signature for this node based on its configuration.
      * Nodes with identical signatures can share cache entries.
+     * Uses file paths (stable) instead of content hashes (changing) to prevent cache pollution.
      */
     protected async getContentSignature(context: PipelineContext): Promise<string> {
-        const inputHashes: string[] = [];
+        const fileRefs: string[] = [];
+        const processingConfig = { ...this.config.config };
 
-        // Include hashes of all inputs (both direct files and resolved from() references)
-        for (const [inputName, input] of Object.entries(this.inputs)) {
-            const resolvedPaths = await context.resolveInput(input);
-            for (const filePath of resolvedPaths) {
-                inputHashes.push(await context.cache.computeFileHash(filePath));
+        // Extract fileRef paths from config (stable file identities, not content hashes)
+        for (const [key, value] of Object.entries(this.config.config || {})) {
+            if (value?.type === 'file') {
+                fileRefs.push(`${key}:${path.resolve(value.path)}`);
+                delete processingConfig[key]; // Remove from config hash
             }
         }
 
-        // Include serialized configuration
-        const configForHashing = {
-            ...this.config,
-            inputs: undefined, // Remove inputs from config hash since we handle them separately above
-            name: undefined    // Remove name from config hash since it's just an identifier, not content
-        };
-        const configString = JSON.stringify(configForHashing, Object.keys(configForHashing).sort());
+        // Include items in the signature for input-dependent processing
+        let itemsSignature = '';
+        if (this.items) {
+            if (typeof this.items === 'string') {
+                itemsSignature = `items:${this.items}`;
+            } else if (Array.isArray(this.items)) {
+                itemsSignature = `items:[${this.items.join(',')}]`;
+            } else {
+                // For NodeOutputReference, use node name and output name
+                itemsSignature = `items:${this.items.node.name}:${this.items.name}`;
+            }
+        }
 
-        // Combine all data and hash
-        const combined = [...inputHashes.sort(), configString].join('|');
+        // Combine file identities + processing config + items (outputConfig excluded by design)
+        const configString = JSON.stringify(processingConfig, Object.keys(processingConfig).sort());
+        const combined = [...fileRefs.sort(), configString, itemsSignature].filter(x => x).join('|');
         const hash = crypto.createHash('sha256').update(combined).digest('hex');
 
-        // Return human-readable signature: ClassName-hash8chars
         return `${this.constructor.name}-${hash.substring(0, 8)}`;
     }
 
@@ -84,10 +109,31 @@ export abstract class PipelineNode<TConfig extends PipelineNodeConfig = Pipeline
         items: string[],
         getCacheKey: (item: string) => string,
         getOutputPath: (item: string) => string,
-        performWork: (item: string) => Promise<T | { result?: T, discoveredDependencies?: string[] } | void>
+        performWork: (item: string, outputPath: string) => Promise<T | { result?: T, discoveredDependencies?: string[] } | void>
     ): Promise<Array<{ item: string, output: string, cached: boolean, result?: T }>> {
-        // Get content signature for cache sharing
         const contentSignature = await this.getContentSignature(context);
+
+        // Extract fileRef paths and resolve from() references for cache entries
+        const configDependencyPaths: string[] = [];
+        const processConfigValue = async (value: any) => {
+            if (value?.type === 'file') {
+                // FileRef - extract path directly
+                configDependencyPaths.push(value.path);
+            } else if (inputIsNodeOutputReference(value)) {
+                // from() reference - resolve to file paths
+                const resolvedPaths = await context.resolveInput(value);
+                configDependencyPaths.push(...resolvedPaths);
+            } else if (typeof value === 'object') {
+                // Recursively process object values
+                for (const v of Object.values(value)) {
+                    await processConfigValue(v);
+                }
+            }
+        };
+
+        for (const value of Object.values(this.config.config || {})) {
+            await processConfigValue(value);
+        }
 
         const cacheKeys = items.map(getCacheKey);
         await context.cache.cleanExcept(contentSignature, cacheKeys);
@@ -102,31 +148,33 @@ export abstract class PipelineNode<TConfig extends PipelineNodeConfig = Pipeline
             if (cached && await context.cache.isValid(cached)) {
                 context.log(`  - Skipping: ${item} (cached)`);
                 // Copy cached output to expected build path if different
-                const expectedOutputPath = getOutputPath(item);
-                if (cached.outputPaths[0] !== expectedOutputPath) {
-                    await context.cache.copyToExpectedPath(cached.outputPaths[0], expectedOutputPath);
+                if (cached.outputPaths[0] !== outputPath) {
+                    await context.cache.copyToExpectedPath(cached.outputPaths[0], outputPath);
                 }
-                results.push({item, output: expectedOutputPath, cached: true});
+                results.push({item, output: outputPath, cached: true});
                 continue;
             }
 
-            const processed = await performWork(item);
+            const processed = await performWork(item, outputPath);
 
             // Handle different return types
             let result: T | undefined;
             let discoveredDependencies: string[] | undefined;
 
             if (processed && typeof processed === 'object' && 'discoveredDependencies' in processed) {
-                // Object with discovered dependencies
                 result = processed.result;
                 discoveredDependencies = processed.discoveredDependencies;
             } else {
-                // Simple result value or void
                 result = processed as T;
             }
 
+            // Build unified cache entry
             const cacheEntry = await context.cache.buildCacheEntry(
-                [item], [outputPath], cacheKey, discoveredDependencies
+                [item],                    // Item files
+                [outputPath],              // Output files
+                cacheKey,                  // Cache key
+                discoveredDependencies,    // Discovered dependencies
+                configDependencyPaths      // Config dependencies (FileRefs + resolved from() references)
             );
             await context.cache.setCache(contentSignature, cacheKey, cacheEntry);
 
@@ -145,6 +193,7 @@ export interface PipelineContext {
     buildDir: string;
 
     getBuildPath(nodeName: string, inputPath: string, newExtension?: string): string;
+    stripBuildPrefix(inputPath: string): string;
     getNodeOutputs(nodeName: string): NodeOutput<any>[] | undefined;
 }
 
@@ -161,12 +210,14 @@ export class Pipeline {
         this.cache = new CacheManager(cacheDir);
     }
 
-    addNode(node: PipelineNode<any, any>): this {
-        this.graph.addNode(node.name, node);
+    addNode(...nodes: PipelineNode<any, any>[]): this {
+        for (const node of nodes) {
+            this.graph.addNode(node.name, node);
 
-        // Call lifecycle hook if it exists
-        if (node.onAddedToPipeline) {
-            node.onAddedToPipeline(this);
+            // Call lifecycle hook if it exists
+            if (node.onAddedToPipeline) {
+                node.onAddedToPipeline(this);
+            }
         }
 
         return this;
@@ -217,35 +268,46 @@ export class Pipeline {
         }
     }
 
-    private setupInputDependencies() {
-        // Setup input-based dependencies from from() references
+    private setupAutomaticDependencies() {
+        // Setup automatic dependencies from NodeOutputReferences in items and config
         for (const nodeName of this.graph.overallOrder()) {
             const node = this.graph.getNodeData(nodeName);
 
-            // Handle input-based dependencies (from from() references)
-            for (const [_, input] of Object.entries(node.inputs)) {
-                if (typeof input === 'object' && 'node' in input) {
-                    try {
-                        console.log(`Adding input dependency for node ${node.name}: ${input.node.name}`);
-                        this.graph.addDependency(node.name, input.node.name);
-                    } catch (err: any) {
-                        throw new Error(`Failed to add input dependency for node ${node.name}: ${err.message}`);
+            // Check items field for NodeOutputReference
+            if (node.items && inputIsNodeOutputReference(node.items)) {
+                try {
+                    console.log(`Adding automatic dependency for node ${node.name}: ${node.items.node.name} (from items)`);
+                    this.graph.addDependency(node.name, node.items.node.name);
+                } catch (err: any) {
+                    throw new Error(`Failed to add automatic dependency for node ${node.name}: ${err.message}`);
+                }
+            }
+
+            // Check config values for NodeOutputReferences
+            if (node.config) {
+                for (const [key, value] of Object.entries(node.config)) {
+                    if (inputIsNodeOutputReference(value)) {
+                        try {
+                            console.log(`Adding automatic dependency for node ${node.name}: ${value.node.name} (from config.${key})`);
+                            this.graph.addDependency(node.name, value.node.name);
+                        } catch (err: any) {
+                            throw new Error(`Failed to add automatic dependency for node ${node.name}: ${err.message}`);
+                        }
                     }
                 }
             }
         }
     }
 
-
     async run() {
         console.log(`Running pipeline ${this.name}`);
         console.log(`Number of nodes: ${this.graph.size()}`);
 
-        // 1. Setup explicit dependencies first
+        // Setup explicit dependencies
         this.setupExplicitDependencies();
 
-        // 2. Setup input-based dependencies (from from() references)
-        this.setupInputDependencies();
+        // Setup automatic dependencies from NodeOutputReferences
+        this.setupAutomaticDependencies();
 
         const executionOrder = this.graph.overallOrder();
         console.log(executionOrder)
@@ -254,10 +316,41 @@ export class Pipeline {
 
                 // Node references
                 if (inputIsNodeOutputReference(input)) {
-                    const outputs = this.nodeOutputs.get(input.node.name)?.flatMap(output => output[input.name]).filter(x => x !== undefined);
+                    let outputs = this.nodeOutputs.get(input.node.name)?.flatMap(output => output[input.name]).filter(x => x !== undefined);
                     if (!outputs || outputs.length === 0) {
                         throw new Error(`Node "${input.node.name}" hasn't run yet or has not produced any outputs.`);
                     }
+
+
+                    // Apply glob filtering if specified
+                    if (input.glob) {
+                        const filteredOutputs: string[] = [];
+
+                        let globPattern: string;
+
+                        for (const outputPath of outputs) {
+
+                            if (outputPath.startsWith(this.buildDir)) {
+                                // Output is in default build directory - use full path for globbing
+                                globPattern = `${this.buildDir}/*/${input.glob}`
+                            } else {
+                                // Output is in custom location - glob from current root
+                                globPattern = input.glob;
+                            }
+
+                            // Use Node.js glob to find matching files
+                            const matches = await glob(globPattern);
+                            if (matches.includes(outputPath)) {
+                                filteredOutputs.push(outputPath);
+                            }
+                        }
+
+                        if (filteredOutputs.length === 0) {
+                            throw new Error(`No files from node "${input.node.name}" output "${input.name}" match pattern: ${input.glob}.\nOutputs: ${JSON.stringify(outputs, null, 2)}`);
+                        }
+                        outputs = filteredOutputs;
+                    }
+
                     return outputs
                 }
 
@@ -285,11 +378,51 @@ export class Pipeline {
             cache: this.cache,
             buildDir: this.buildDir,
             getBuildPath: (nodeName: string, inputPath: string, newExtension?: string): string => {
-                const relativePath = path.relative(process.cwd(), inputPath);
+                let relativePath = inputPath;
+
+                // Check if this is a build artifact path and strip build dir + source node name
+                const resolvedBuildDir = path.resolve(this.buildDir);
+                const resolvedInputPath = path.resolve(inputPath);
+
+                if (resolvedInputPath.startsWith(resolvedBuildDir)) {
+                    // Strip build dir: .efes-build/upstream:transform/some/path/file.html
+                    const afterBuildDir = path.relative(resolvedBuildDir, resolvedInputPath);
+
+                    // Strip source node name: upstream:transform/some/path/file.html -> some/path/file.html
+                    const pathParts = afterBuildDir.split(path.sep);
+                    if (pathParts.length > 1) {
+                        relativePath = path.join(...pathParts.slice(1));
+                    }
+                } else {
+                    // For non-build paths, make them relative to cwd
+                    relativePath = path.relative(process.cwd(), inputPath);
+                }
+
+                // Now build the new path
                 const buildPath = path.join(this.buildDir, nodeName, relativePath);
                 return newExtension ?
                     buildPath.replace(path.extname(buildPath), newExtension) :
                     buildPath;
+            },
+            stripBuildPrefix: (inputPath: string): string => {
+                const resolvedBuildDir = path.resolve(this.buildDir);
+                const resolvedInputPath = path.resolve(inputPath);
+
+                if (resolvedInputPath.startsWith(resolvedBuildDir)) {
+                    // Strip build dir: .efes-build/node-name/some/path/file.html
+                    const afterBuildDir = path.relative(resolvedBuildDir, resolvedInputPath);
+
+                    // Strip the first path segment (node directory): node-name/some/path/file.html -> some/path/file.html
+                    const pathParts = afterBuildDir.split(path.sep);
+                    if (pathParts.length > 1) {
+                        return path.join(...pathParts.slice(1));
+                    }
+                    // If only one segment, return as is
+                    return afterBuildDir;
+                }
+
+                // For non-build paths, make them relative to cwd
+                return path.relative(process.cwd(), inputPath);
             },
             getNodeOutputs: (nodeName: string) => this.nodeOutputs.get(nodeName)
         }

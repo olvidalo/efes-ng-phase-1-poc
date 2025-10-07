@@ -7,12 +7,13 @@ import {Eleventy} from '@11ty/eleventy';
 
 interface EleventyBuildConfig extends PipelineNodeConfig {
     name: string;
-    inputs: {
-        sourceFiles?: Input;
+    config: {
+        sourceDir: string;
+        eleventyConfig?: any;
     };
-    sourceDir: string;
-    outputDir?: string;
-    eleventyConfig?: any;
+    outputConfig?: {
+        outputDir?: string;
+    };
 }
 
 export class EleventyBuildNode extends PipelineNode<EleventyBuildConfig, "built"> {
@@ -20,13 +21,13 @@ export class EleventyBuildNode extends PipelineNode<EleventyBuildConfig, "built"
         super(config);
 
         // Validate that source directory is provided
-        if (!this.config.sourceDir) {
+        if (!this.config.config.sourceDir) {
             throw new Error(`EleventyBuildNode "${this.name}" requires sourceDir configuration`);
         }
     }
 
     async run(context: PipelineContext) {
-        const sourceDir = path.resolve(this.config.sourceDir);
+        const sourceDir = path.resolve(this.config.config.sourceDir);
 
         // Check if source directory exists
         try {
@@ -36,8 +37,8 @@ export class EleventyBuildNode extends PipelineNode<EleventyBuildConfig, "built"
         }
 
         // Determine output directory
-        const outputDir = this.config.outputDir ?
-            path.resolve(this.config.outputDir) :
+        const outputDir = this.config.outputConfig?.outputDir ?
+            path.resolve(this.config.outputConfig.outputDir) :
             context.getBuildPath(this.name, sourceDir);
 
         context.log(`Building Eleventy site: ${sourceDir} -> ${outputDir}`);
@@ -50,7 +51,7 @@ export class EleventyBuildNode extends PipelineNode<EleventyBuildConfig, "built"
 
         // Initialize Eleventy
         const elev = new Eleventy(sourceDir, outputDir, {
-            ...this.config.eleventyConfig,
+            ...this.config.config.eleventyConfig,
         });
 
 

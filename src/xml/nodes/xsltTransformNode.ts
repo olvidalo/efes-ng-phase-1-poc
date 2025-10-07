@@ -1,38 +1,54 @@
-import {from, type Input, type PipelineNodeConfig} from "../../core/pipeline";
+import {from, type Input, type PipelineNodeConfig, type FileRef} from "../../core/pipeline";
 import {CompositeNode} from "../../core/compositeNode";
 import {CompileStylesheetNode} from "./compileStylesheetNode";
 import {SefTransformNode} from "./sefTransformNode";
 
 interface XsltTransformConfig extends PipelineNodeConfig {
-    inputs: {
-        xsltStylesheet: Input;
-        sourceXml?: Input;
+    items?: Input;  // sourceXml files (optional for no-source transforms)
+    config: {
+        xsltStylesheet: FileRef | Input;
+        initialTemplate?: string;
+        stylesheetParams?: Record<string, any | ((inputPath: string) => any)>;
+        serializationParams?: Record<string, any>;
+        initialMode?: string;
     };
-    outputFilenameMapping?: (inputPath: string) => string;
-    resultDocumentsDir?: string;
-    initialTemplate?: string;
-    stylesheetParams?: Record<string, any | ((inputPath: string) => any)>;
-    initialMode?: string;
+    outputConfig?: {
+        outputFilenameMapping?: (inputPath: string) => string;
+        resultDocumentsDir?: string;
+        resultExtension?: string;
+    };
 }
 
 export class XsltTransformNode extends CompositeNode<XsltTransformConfig, "transformed" | "result-documents"> {
     protected buildInternalNodes(): void {
+        const compileName = `${this.name}:compile`;
+        const transformName = `${this.name}:transform`;
+
+
         const compile = new CompileStylesheetNode({
-            name: `${this.name}:compile`,
-            inputs: { xslt: this.config.inputs.xsltStylesheet },
+            name: compileName,
+            items: typeof this.config.config.xsltStylesheet === "object" && "path" in this.config.config.xsltStylesheet
+                ? this.config.config.xsltStylesheet.path
+                : this.config.config.xsltStylesheet,
+            config: {},
         })
 
         const transform = new SefTransformNode({
-            name: `${this.name}:transform`,
-            inputs: {
+            name: transformName,
+            items: this.items,
+            config: {
                 sefStylesheet: from(compile, "compiledStylesheet"),
-                sourceXml: this.config.inputs.sourceXml,
+                initialTemplate: this.config.config.initialTemplate,
+                stylesheetParams: this.config.config.stylesheetParams,
+                serializationParams: this.config.config.serializationParams,
+                initialMode: this.config.config.initialMode,
             },
-            outputFilenameMapping: this.config.outputFilenameMapping,
-            resultDocumentsDir: this.config.resultDocumentsDir,
-            initialTemplate: this.config.initialTemplate,
-            stylesheetParams: this.config.stylesheetParams,
-            initialMode: this.config.initialMode,
+            outputConfig: {
+                outputFilenameMapping: this.config.outputConfig?.outputFilenameMapping,
+                resultDocumentsDir: this.config.outputConfig?.resultDocumentsDir,
+                resultExtension: this.config.outputConfig?.resultExtension,
+
+            },
         })
 
         this.internalNodes = [compile, transform]

@@ -5,22 +5,22 @@ import fs from "node:fs/promises";
 import FlexSearch from 'flexsearch';
 
 interface FlexSearchIndexConfig extends PipelineNodeConfig {
-    name: string;
-    inputs: {
-        documentsJson: Input;
+    items: Input;  // documentsJson files
+    config: Record<string, any>;  // No processing config needed
+    outputConfig?: {
+        outputDir?: string;
     };
-    outputDir?: string;
 }
 
 export class FlexSearchIndexNode extends PipelineNode<FlexSearchIndexConfig, "searchIndex"> {
     async run(context: PipelineContext) {
-        const jsonFiles = await context.resolveInput(this.inputs.documentsJson);
+        const jsonFiles = await context.resolveInput(this.items!);
         if (jsonFiles.length !== 1) {
             throw new Error("FlexSearchIndexNode requires exactly one JSON input file");
         }
 
         const jsonFile = jsonFiles[0];
-        const outputDir = this.config.outputDir || context.getBuildPath(this.name, jsonFile);
+        const outputDir = this.config.outputConfig?.outputDir || context.getBuildPath(this.name, jsonFile);
 
         context.log(`Generating FlexSearch index from ${jsonFile}`);
 
