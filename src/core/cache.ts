@@ -8,11 +8,18 @@ import * as crypto from "node:crypto";
  */
 interface CacheEntry {
   /**
-   * Output file paths that were generated.
-   * Used to verify outputs still exist before claiming cache hit.
-   * Example: ['scratch/book.html']
+   * Output file paths organized by output key.
+   * Used to verify outputs still exist and reconstruct node outputs.
+   * Example: { "transformed": ["scratch/book.html"], "result-documents": ["a.xml", "b.xml"] }
    */
-  outputPaths: string[];
+  outputsByKey: Record<string, string[]>;
+
+  /**
+   * Base directory for all outputs from this node.
+   * Used for cache reconstruction across nodes with different output directories.
+   * Example: '.efes-build/transform-epidoc/' or 'dest/'
+   */
+  outputBaseDir: string;
 
   /**
    * Unified file tracking - ALL files tracked with same logic.
@@ -108,12 +115,14 @@ export class CacheManager {
    * Returns false if any validation check fails.
    */
   async isValid(entry: CacheEntry): Promise<boolean> {
-    // 1. Check all output files exist
-    for (const outputPath of entry.outputPaths) {
-      try {
-        await fs.access(outputPath);
-      } catch {
-        return false; // Output missing
+    // 1. Check all output files exist (flatten from all output keys)
+    for (const paths of Object.values(entry.outputsByKey)) {
+      for (const outputPath of paths) {
+        try {
+          await fs.access(outputPath);
+        } catch {
+          return false; // Output missing
+        }
       }
     }
 
@@ -132,7 +141,6 @@ export class CacheManager {
         if (currentHash !== fileInfo.hash) {
           return false; // Content changed
         }
-
         // Timestamp changed but content identical - still valid
       } catch {
         return false; // File missing
@@ -244,7 +252,8 @@ export class CacheManager {
    */
   async buildCacheEntry(
     itemPaths: string[],
-    outputPaths: string[],
+    outputsByKey: Record<string, string[]>,
+    outputBaseDir: string,
     itemKey: string,
     discoveredDependencies?: string[],
     fileRefPaths?: string[]
@@ -295,7 +304,8 @@ export class CacheManager {
     }
 
     return {
-      outputPaths,
+      outputsByKey,
+      outputBaseDir,
       trackedFiles,
       timestamp: Date.now(),
       itemKey

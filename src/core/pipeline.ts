@@ -3,6 +3,7 @@ import {CacheManager} from "./cache";
 import {glob} from "glob";
 import path from "node:path";
 import crypto from "node:crypto";
+import fs from "node:fs/promises";
 
 interface NodeOutputReference {
     node: PipelineNode<any, any>;
@@ -70,15 +71,84 @@ export abstract class PipelineNode<TConfig extends PipelineNodeConfig = Pipeline
      * Nodes with identical signatures can share cache entries.
      * Uses file paths (stable) instead of content hashes (changing) to prevent cache pollution.
      */
-    protected async getContentSignature(context: PipelineContext): Promise<string> {
-        const fileRefs: string[] = [];
-        const processingConfig = { ...this.config.config };
+    /**
+     * Helper: Get relative path from item, stripping build prefixes if present.
+     * Used for outputDir-based path calculation.
+     */
+    protected getCleanRelativePath(item: string, context: PipelineContext): string {
+        const itemDir = path.dirname(item);
+        const cleanDir = context.stripBuildPrefix(itemDir);
+        return path.relative(process.cwd(), cleanDir);
+    }
 
-        // Extract fileRef paths from config (stable file identities, not content hashes)
+    /**
+     * Serialize a value (without key prefix) for content signature.
+     * Recursive helper for serializeForSignature.
+     */
+    private serializeValue(value: any, path: string): string {
+        // Null/undefined
+        if (value === null || value === undefined) {
+            return 'null';
+        }
+
+        // FileRef - use relative path
+        if (value?.type === 'file') {
+            return `FileRef(${value.path})`;
+        }
+
+        // from() reference - use logical reference
+        if (inputIsNodeOutputReference(value)) {
+            const globPart = value.glob ? `:${value.glob}` : '';
+            return `from(${value.node.name}:${value.name}${globPart})`;
+        }
+
+        // Functions - use toString()
+        if (typeof value === 'function') {
+            return value.toString();
+        }
+
+        // Plain primitives
+        if (typeof value !== 'object') {
+            return JSON.stringify(value);
+        }
+
+        // Arrays - recursively serialize elements
+        if (Array.isArray(value)) {
+            const elements = value.map((v, i) => this.serializeValue(v, `${path}[${i}]`));
+            return `[${elements.join(',')}]`;
+        }
+
+        // Plain objects - recursively serialize properties
+        const entries = Object.entries(value)
+            .sort(([a], [b]) => a.localeCompare(b))
+            .map(([k, v]) => `${k}:${this.serializeValue(v, `${path}.${k}`)}`);
+        return `{${entries.join(',')}}`;
+    }
+
+    /**
+     * Serialize a config key-value pair for inclusion in content signature.
+     * Throws if encountering unknown object types to ensure we handle all cases.
+     *
+     * TODO: Move config validation logic to a central location, not tied to signature generation.
+     * This would allow validating configs at node construction time rather than during execution.
+     */
+    private serializeForSignature(key: string, value: any): string | null {
+        if (value === null || value === undefined) {
+            return null;
+        }
+
+        const serializedValue = this.serializeValue(value, key);
+        return `${key}:${serializedValue}`;
+    }
+
+    protected async getContentSignature(context: PipelineContext): Promise<string> {
+        const configParts: string[] = [];
+
+        // Serialize all config values
         for (const [key, value] of Object.entries(this.config.config || {})) {
-            if (value?.type === 'file') {
-                fileRefs.push(`${key}:${path.resolve(value.path)}`);
-                delete processingConfig[key]; // Remove from config hash
+            const serialized = this.serializeForSignature(key, value);
+            if (serialized) {
+                configParts.push(serialized);
             }
         }
 
@@ -90,27 +160,31 @@ export abstract class PipelineNode<TConfig extends PipelineNodeConfig = Pipeline
             } else if (Array.isArray(this.items)) {
                 itemsSignature = `items:[${this.items.join(',')}]`;
             } else {
-                // For NodeOutputReference, use node name and output name
-                itemsSignature = `items:${this.items.node.name}:${this.items.name}`;
+                // For NodeOutputReference, use node name, output name, and glob filter if present
+                const globPart = this.items.glob ? `:${this.items.glob}` : '';
+                itemsSignature = `items:from(${this.items.node.name}:${this.items.name}${globPart})`;
             }
         }
 
-        // Combine file identities + processing config + items (outputConfig excluded by design)
-        const configString = JSON.stringify(processingConfig, Object.keys(processingConfig).sort());
-        const combined = [...fileRefs.sort(), configString, itemsSignature].filter(x => x).join('|');
+        // Combine all parts, sort for consistency, and hash
+        const combined = [...configParts.sort(), itemsSignature].filter(x => x).join('|');
         const hash = crypto.createHash('sha256').update(combined).digest('hex');
 
         return `${this.constructor.name}-${hash.substring(0, 8)}`;
     }
 
     // Unified caching for single or multiple items
-    protected async withCache<T>(
+    protected async withCache<TOutput extends string>(
         context: PipelineContext,
         items: string[],
         getCacheKey: (item: string) => string,
-        getOutputPath: (item: string) => string,
-        performWork: (item: string, outputPath: string) => Promise<T | { result?: T, discoveredDependencies?: string[] } | void>
-    ): Promise<Array<{ item: string, output: string, cached: boolean, result?: T }>> {
+        getOutputDir: () => string,
+        getOutputPath: (item: string, outputKey: TOutput, filename?: string) => string | undefined,
+        performWork: (item: string) => Promise<{
+            outputs: Record<TOutput, string[]>;
+            discoveredDependencies?: string[];
+        }>
+    ): Promise<Array<{ item: string, outputs: Record<TOutput, string[]>, cached: boolean }>> {
         const contentSignature = await this.getContentSignature(context);
 
         // Extract fileRef paths and resolve from() references for cache entries
@@ -136,49 +210,91 @@ export abstract class PipelineNode<TConfig extends PipelineNodeConfig = Pipeline
         }
 
         const cacheKeys = items.map(getCacheKey);
+        context.log(`Cache lookup - contentSignature: ${contentSignature}`);
         await context.cache.cleanExcept(contentSignature, cacheKeys);
 
         const results = [];
         for (let i = 0; i < items.length; i++) {
             const item = items[i];
             const cacheKey = cacheKeys[i];
-            const outputPath = getOutputPath(item);
 
             const cached = await context.cache.getCache(contentSignature, cacheKey);
-            if (cached && await context.cache.isValid(cached)) {
-                context.log(`  - Skipping: ${item} (cached)`);
-                // Copy cached output to expected build path if different
-                if (cached.outputPaths[0] !== outputPath) {
-                    await context.cache.copyToExpectedPath(cached.outputPaths[0], outputPath);
+            if (!cached) {
+                context.log(`  - Cache miss for ${item}: no cache entry found (key: ${cacheKey.substring(0, 50)}...)`);
+            }
+            if (cached) {
+                // Recalculate expected paths based on CURRENT config
+                const cachedBaseDir = cached.outputBaseDir;
+                const newBaseDir = getOutputDir();
+                const newOutputsByKey: Record<TOutput, string[]> = {} as Record<TOutput, string[]>;
+
+                for (const [outputKey, cachedPaths] of Object.entries(cached.outputsByKey)) {
+                    // Try to recalculate path using current config
+                    const recalculatedPath = getOutputPath(item, outputKey as TOutput);
+
+                    if (recalculatedPath !== undefined) {
+                        // Can recalculate (primary outputs) - use current config
+                        newOutputsByKey[outputKey as TOutput] = [recalculatedPath];
+                    } else {
+                        // Can't recalculate (secondary outputs) - reconstruct from cached structure
+                        const newPaths: string[] = [];
+                        for (const cachedPath of cachedPaths) {
+                            // Extract relative path from cached base directory
+                            const relativePath = path.relative(cachedBaseDir, cachedPath);
+
+                            // Validate: ensure path doesn't escape (no ../ at start)
+                            if (relativePath.startsWith('..')) {
+                                throw new Error(`Cached output path escapes base directory: ${cachedPath} (base: ${cachedBaseDir})`);
+                            }
+
+                            // Reconstruct path in new base directory
+                            const expectedPath = path.join(newBaseDir, relativePath);
+                            newPaths.push(expectedPath);
+                        }
+                        newOutputsByKey[outputKey as TOutput] = newPaths;
+                    }
                 }
-                results.push({item, output: outputPath, cached: true});
-                continue;
+
+                // Validate dependencies (regardless of where outputs currently are)
+                const dependenciesValid = await context.cache.isValid(cached);
+
+                if (!dependenciesValid) {
+                    context.log(`  - Cache miss for ${item}: dependencies changed`);
+                } else {
+                    // Copy files if needed (cross-node reuse)
+                    // TODO: Could optimize by checking if file already exists at expectedPath with same hash
+                    for (const [outputKey, cachedPaths] of Object.entries(cached.outputsByKey)) {
+                        const expectedPaths = newOutputsByKey[outputKey as TOutput];
+                        for (let i = 0; i < cachedPaths.length; i++) {
+                            const cachedPath = cachedPaths[i];
+                            const expectedPath = expectedPaths[i];
+                            if (cachedPath !== expectedPath) {
+                                // Cross-node reuse - copy to expected location
+                                await context.cache.copyToExpectedPath(cachedPath, expectedPath);
+                            }
+                        }
+                    }
+
+                    context.log(`  - Skipping: ${item} (cached)`);
+                    results.push({item, outputs: newOutputsByKey, cached: true});
+                    continue;
+                }
             }
 
-            const processed = await performWork(item, outputPath);
-
-            // Handle different return types
-            let result: T | undefined;
-            let discoveredDependencies: string[] | undefined;
-
-            if (processed && typeof processed === 'object' && 'discoveredDependencies' in processed) {
-                result = processed.result;
-                discoveredDependencies = processed.discoveredDependencies;
-            } else {
-                result = processed as T;
-            }
+            const processed = await performWork(item);
 
             // Build unified cache entry
             const cacheEntry = await context.cache.buildCacheEntry(
                 [item],                    // Item files
-                [outputPath],              // Output files
+                processed.outputs,         // Output files by key
+                getOutputDir(),            // Output base directory
                 cacheKey,                  // Cache key
-                discoveredDependencies,    // Discovered dependencies
+                processed.discoveredDependencies,    // Discovered dependencies
                 configDependencyPaths      // Config dependencies (FileRefs + resolved from() references)
             );
             await context.cache.setCache(contentSignature, cacheKey, cacheEntry);
 
-            results.push({item, output: outputPath, cached: false, result});
+            results.push({item, outputs: processed.outputs, cached: false});
         }
         return results;
     }

@@ -8,3 +8,5 @@ dist/
 scratch
 CLAUDE.md
 .efes-cache
+.efes-build
+test/**/.test-temp

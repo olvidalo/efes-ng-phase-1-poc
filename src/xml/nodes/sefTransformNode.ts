@@ -39,6 +39,7 @@ SaxonJS.registerExtensionFunctions({
                     'local-tei-display-html': `/${language}/texts/${filename}.html`,
                     'local-home-page': `/${language}/`,
                     'local-concordance-bibliography': `/${language}/concordances/bibliography/`,
+                    'local-concordance-bibliography-item': `/${language}/concordances/bibliography/${filename}.html`,
                     'local-index-display-html': `/${language}/indices/${paramArray[1]}/${paramArray[2]}.html`,
                 };
 
@@ -60,6 +61,7 @@ interface SefTransformConfig extends PipelineNodeConfig {
         initialMode?: string;
     };
     outputConfig?: {
+        outputDir?: string;
         outputFilenameMapping?: (inputPath: string) => string;
         resultDocumentsDir?: string;
         resultExtension?: string;
@@ -68,6 +70,36 @@ interface SefTransformConfig extends PipelineNodeConfig {
 
 
 export class SefTransformNode extends PipelineNode<SefTransformConfig, "transformed" | "result-documents"> {
+
+    // Helper: Calculate transformed output path (DRY - reused in getOutputPath and performWork)
+    private getTransformedPath(item: string, context: PipelineContext): string {
+        // If explicit outputDir specified, all paths are relative to it
+        if (this.config.outputConfig?.outputDir) {
+            const outputDir = this.config.outputConfig.outputDir;
+
+            // Custom mapping returns path relative to outputDir
+            if (this.config.outputConfig.outputFilenameMapping) {
+                const relativePath = this.config.outputConfig.outputFilenameMapping(item);
+                return path.join(outputDir, relativePath);
+            }
+
+            // Default: preserve relative path structure from source (strip build prefix)
+            const extension = this.config.outputConfig?.resultExtension ?? '.xml';
+            const basename = path.basename(item, path.extname(item));
+            const relativePath = this.getCleanRelativePath(item, context);
+            return path.join(outputDir, relativePath, basename + extension);
+        }
+
+        // No outputDir: use default build directory logic via getBuildPath
+        if (this.config.outputConfig?.outputFilenameMapping) {
+            const strippedItem = context.stripBuildPrefix(item);
+            const relativePath = this.config.outputConfig.outputFilenameMapping(strippedItem);
+            return path.join(context.buildDir, this.name, relativePath);
+        }
+
+        const extension = this.config.outputConfig?.resultExtension ?? '.xml';
+        return context.getBuildPath(this.name, item, extension);
+    }
 
     async run(context: PipelineContext) {
         // Handle both FileRef and Input (NodeOutputReference) for sefStylesheet
@@ -121,15 +153,42 @@ export class SefTransformNode extends PipelineNode<SefTransformConfig, "transfor
         // replaceReadFile('readFile');
         // replaceReadFile('readFileSync');
 
-        const results = await this.withCache(
+        const results = await this.withCache<"transformed" | "result-documents">(
             context,
             sourcePaths,
             (item) => isNoSourceMode ? `no-source-${sefStylesheetPath}` : `${item}-with-${sefStylesheetPath}`,
-            (item) => isNoSourceMode ?
-                (this.config.outputConfig?.outputFilenameMapping?.(sefStylesheetPath) ??
-                 context.getBuildPath(this.name, sefStylesheetPath, this.config.outputConfig?.resultExtension ?? '.html')) :
-                outputFilenameMapper(item),
-            async (sourcePath, outputPath) => {
+            () => {
+                // Output base directory
+                return this.config.outputConfig?.outputDir ??
+                       path.join(context.buildDir, this.name);
+            },
+            (item, outputKey, filename?): string | undefined => {
+                if (outputKey === "transformed") {
+                    return this.getTransformedPath(item, context);
+                }
+                else if (outputKey === "result-documents") {
+                    // Without filename: can't recalculate, return undefined (use cached structure)
+                    if (!filename) {
+                        return undefined;
+                    }
+
+                    // With filename: can calculate path (used during performWork)
+                    const transformedPath = this.getTransformedPath(item, context);
+                    const baseDir = path.dirname(transformedPath);
+                    const resultPath = path.normalize(path.join(baseDir, filename));
+
+                    // Security: ensure result stays within node's build directory
+                    if (!resultPath.startsWith(baseDir)) {
+                        throw new Error(`Result-document path escapes build directory: ${filename}`);
+                    }
+
+                    return resultPath;
+                }
+                throw new Error(`Unknown output key: ${outputKey}`);
+            },
+            async (sourcePath) => {
+
+                const outputPath = this.getTransformedPath(sourcePath, context);
 
                 // TODO: maybe we can get document() calls from SaxonJs getPlatform().readFile
                 const transformOptions: any = {
@@ -168,17 +227,49 @@ export class SefTransformNode extends PipelineNode<SefTransformConfig, "transfor
 
                 const result = await transform(transformOptions);
 
-                // Ensure directory exists before writing
+                // Write principal result
                 await fs.mkdir(path.dirname(outputPath), { recursive: true });
                 await fs.writeFile(outputPath, result.principalResult);
                 context.log(`  - Generated: ${outputPath}`);
+
+                // Handle result documents (xsl:result-document outputs)
+                // XSLT controls relative path structure via href attribute
+                const resultDocumentPaths: string[] = [];
+                if (result.resultDocuments) {
+                    const baseDir = path.dirname(outputPath);
+
+                    for (const [uri, content] of Object.entries(result.resultDocuments)) {
+                        // uri contains XSLT-relative path (e.g., "result-documents/bib-123.xml" or just "bib-123.xml")
+                        const relativePath = uri.startsWith('file://') ? uri.substring(7) : uri;
+                        const docPath = path.normalize(path.join(baseDir, relativePath));
+
+                        // Security: ensure result stays within node's build directory
+                        if (!docPath.startsWith(baseDir)) {
+                            throw new Error(`Result-document path escapes build directory: ${relativePath}`);
+                        }
+
+                        // Ensure subdirectories exist (XSLT might specify nested paths)
+                        await fs.mkdir(path.dirname(docPath), { recursive: true });
+                        await fs.writeFile(docPath, content as string);
+                        resultDocumentPaths.push(docPath);
+                        context.log(`  - Result document: ${docPath}`);
+                    }
+                }
+
+                // TODO: Future improvement - use getOutputPath directly in deliverResultDocument callback
+                // This would make Saxon call getOutputPath when writing result-documents, ensuring
+                // consistency between cache miss (writing) and cache hit (path recalculation)
+
+                return {
+                    outputs: {
+                        transformed: [outputPath],
+                        "result-documents": resultDocumentPaths
+                    }
+                };
             }
         );
 
-        return results.map(r => ({
-            transformed: [r.output],
-            "result-documents": []
-        }));
+        return results.map(r => r.outputs);
     }
 
     private async resolveStylesheetParams(context: PipelineContext, sourcePath: string): Promise<Record<string, any>> {

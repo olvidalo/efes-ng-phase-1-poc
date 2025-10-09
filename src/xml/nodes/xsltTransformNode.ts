@@ -14,6 +14,7 @@ interface XsltTransformConfig extends PipelineNodeConfig {
     };
     outputConfig?: {
         outputFilenameMapping?: (inputPath: string) => string;
+        outputDir?: string;
         resultDocumentsDir?: string;
         resultExtension?: string;
     };
@@ -47,6 +48,7 @@ export class XsltTransformNode extends CompositeNode<XsltTransformConfig, "trans
                 outputFilenameMapping: this.config.outputConfig?.outputFilenameMapping,
                 resultDocumentsDir: this.config.outputConfig?.resultDocumentsDir,
                 resultExtension: this.config.outputConfig?.resultExtension,
+                outputDir: this.config.outputConfig?.outputDir,
 
             },
         })

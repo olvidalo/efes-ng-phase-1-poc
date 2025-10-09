@@ -11,22 +11,60 @@ interface CompileStylesheetConfig extends PipelineNodeConfig {
     items: Input;  // xslt files to compile
     config: Record<string, any>;  // No processing config needed
     outputConfig?: {
+        outputDir?: string;
         outputFilename?: string;
     };
 }
 
 // TODO: need to preserve the original path somehow, maybe
 export class CompileStylesheetNode extends PipelineNode<CompileStylesheetConfig, "compiledStylesheet"> {
+
+    // Helper: Calculate compiled output path
+    private getCompiledPath(item: string, context: PipelineContext): string {
+        // If explicit outputDir specified, all paths are relative to it
+        if (this.config.outputConfig?.outputDir) {
+            const outputDir = this.config.outputConfig.outputDir;
+
+            // Custom filename is relative to outputDir
+            if (this.config.outputConfig.outputFilename) {
+                return path.join(outputDir, this.config.outputConfig.outputFilename);
+            }
+
+            // Default: preserve relative path structure from source (strip build prefix)
+            const basename = path.basename(item, path.extname(item));
+            const relativePath = this.getCleanRelativePath(item, context);
+            return path.join(outputDir, relativePath, basename + '.sef.json');
+        }
+
+        // No outputDir: use default build directory logic via getBuildPath
+        if (this.config.outputConfig?.outputFilename) {
+            return path.join(context.buildDir, this.name, this.config.outputConfig.outputFilename);
+        }
+
+        return context.getBuildPath(this.name, item, '.sef.json');
+    }
+
     async run(context: PipelineContext) {
         const xsltPaths = await context.resolveInput(this.items!);
 
-        const results = await this.withCache(
+        const results = await this.withCache<"compiledStylesheet">(
             context,
             xsltPaths,
             (item) => item,
-            (item) => this.config.outputConfig?.outputFilename ??
-                     context.getBuildPath(this.name, item, '.sef.json'),
-            async (item, outputPath) => {
+            () => {
+                // Output base directory
+                return this.config.outputConfig?.outputDir ??
+                       path.join(context.buildDir, this.name);
+            },
+            (item, outputKey, filename?): string | undefined => {
+                if (outputKey === "compiledStylesheet") {
+                    return this.getCompiledPath(item, context);
+                }
+                throw new Error(`Unknown output key: ${outputKey}`);
+            },
+            async (item) => {
+                const outputPath = this.getCompiledPath(item, context);
+
                 context.log(`Compiling ${item} to ${outputPath}`);
 
                 // Extract XSLT dependencies before compilation
@@ -78,16 +116,19 @@ export class CompileStylesheetNode extends PipelineNode<CompileStylesheetConfig,
                         });
                     });
 
-                    return {discoveredDependencies};
+                    return {
+                        outputs: {
+                            compiledStylesheet: [outputPath]
+                        },
+                        discoveredDependencies
+                    };
                 } catch (err: any) {
                     throw new Error(`Failed to compile XSL: ${err.message}`);
                 }
             }
         );
 
-        return results.map(r => ({
-            compiledStylesheet: [r.output]
-        }));
+        return results.map(r => r.outputs);
     }
 
     private async extractXsltDependencies(xsltPath: string): Promise<string[]> {
