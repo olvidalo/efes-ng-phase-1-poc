@@ -15,8 +15,10 @@ test/**/.test-temp
 project/build
 project/index-data
 project/processed-stylesheets
-project/site-source
-project/build
+project/site-source/**/*.html
+project/site-source/**/*.json
+project/site-source/search-data
+project/site-source/en/indices
 
 project2/dest
 project2/preprocessed
