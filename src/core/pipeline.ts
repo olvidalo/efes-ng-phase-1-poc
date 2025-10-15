@@ -199,14 +199,17 @@ export abstract class PipelineNode<TConfig extends PipelineNodeConfig = Pipeline
 
         // Extract fileRef paths and resolve from() references for cache entries
         const configDependencyPaths: string[] = [];
+        const upstreamNodes = new Map<string, NodeOutputReference>(); // Track upstream node references
+
         const processConfigValue = async (value: any) => {
             if (value?.type === 'file') {
                 // FileRef - extract path directly
                 configDependencyPaths.push(value.path);
             } else if (inputIsNodeOutputReference(value)) {
-                // from() reference - resolve to file paths
+                // from() reference - resolve to file paths AND track upstream node
                 const resolvedPaths = await context.resolveInput(value);
                 configDependencyPaths.push(...resolvedPaths);
+                upstreamNodes.set(value.node.name, value);
             } else if (typeof value === 'object') {
                 // Recursively process object values
                 for (const v of Object.values(value)) {
@@ -217,6 +220,18 @@ export abstract class PipelineNode<TConfig extends PipelineNodeConfig = Pipeline
 
         for (const value of Object.values(this.config.config || {})) {
             await processConfigValue(value);
+        }
+
+        // Also check items field for from() references
+        if (this.items && inputIsNodeOutputReference(this.items)) {
+            upstreamNodes.set(this.items.node.name, this.items);
+        }
+
+        // Compute upstream output signatures
+        const upstreamOutputSignatures: { [nodeName: string]: string } = {};
+        for (const [nodeName, nodeRef] of upstreamNodes.entries()) {
+            const outputs = await context.resolveInput(nodeRef);
+            upstreamOutputSignatures[nodeName] = CacheManager.computeOutputSignature(outputs);
         }
 
         const cacheKeys = items.map(getCacheKey);
@@ -278,7 +293,7 @@ export abstract class PipelineNode<TConfig extends PipelineNodeConfig = Pipeline
             }
 
             // Validate dependencies (regardless of where outputs currently are)
-            const dependenciesValid = await context.cache.isValid(cached);
+            const dependenciesValid = await context.cache.isValid(cached, context);
 
             if (!dependenciesValid) {
                 context.log(`  - Cache miss for ${item}: dependencies changed`);
@@ -316,7 +331,8 @@ export abstract class PipelineNode<TConfig extends PipelineNodeConfig = Pipeline
                     getOutputDir(),            // Output base directory
                     cacheKey,                  // Cache key
                     processed.discoveredDependencies,    // Discovered dependencies
-                    configDependencyPaths      // Config dependencies (FileRefs + resolved from() references)
+                    configDependencyPaths,     // Config dependencies (FileRefs + resolved from() references)
+                    upstreamOutputSignatures   // Upstream node output signatures
                 );
 
                 return {index, item, processed, cacheEntry, cacheKey};

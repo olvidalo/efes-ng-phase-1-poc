@@ -34,7 +34,13 @@ export class FlexSearchIndexNode extends PipelineNode<FlexSearchIndexConfig, "se
         const indexConfig = {
             id: 'num_id',
             store: true,  // Store full documents for .get() retrieval
-            index: ['text', 'document_title']  // Only index text fields
+            // TODO make configurable!
+            index: [
+                'text', 'lemmatised_text'
+            ],
+            tag: [ 'document_title',
+                'found_provenance', 'source_repository', 'support_material',
+                'support_object_type', 'text_type', 'language', 'origin_date']
         };
         const searchIndex = new FlexSearch.Document(indexConfig);
 
@@ -71,7 +77,7 @@ export class FlexSearchIndexNode extends PipelineNode<FlexSearchIndexConfig, "se
         await fs.writeFile(path.join(outputDir, 'index.json'), JSON.stringify(writtenFiles, null, 2));
 
         this.log(context, `FlexSearch index generated: ${outputDir}`);
-        return [{ searchIndex: [outputDir] }];
+        return [{ searchIndex: [...writtenFiles, 'facets.json', 'count.json', 'config.json', 'index.json' ].map(file => path.join(outputDir, file)) }];
     }
 
     private generateFacets(documents: any[]): Record<string, Record<string, number>> {

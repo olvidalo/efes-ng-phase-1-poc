@@ -14,6 +14,7 @@ interface CompileStylesheetConfig extends PipelineNodeConfig {
     outputConfig?: {
         outputDir?: string;
         outputFilename?: string;
+        outputFilenameMapping?: (inputPath: string) => string;
     };
 }
 
@@ -25,6 +26,11 @@ export class CompileStylesheetNode extends PipelineNode<CompileStylesheetConfig,
         // If explicit outputDir specified, all paths are relative to it
         if (this.config.outputConfig?.outputDir) {
             const outputDir = this.config.outputConfig.outputDir;
+
+            if (this.config.outputConfig.outputFilenameMapping) {
+                const relativePath = this.config.outputConfig.outputFilenameMapping(item);
+                return path.join(outputDir, relativePath);
+            }
 
             // Custom filename is relative to outputDir
             if (this.config.outputConfig.outputFilename) {

@@ -35,6 +35,16 @@ interface CacheEntry {
   };
 
   /**
+   * Signatures of upstream node outputs (from `from()` references).
+   * Tracks the *set* of files produced by upstream nodes.
+   * Map: nodeName -> hash of sorted output file paths
+   * Used to detect when upstream produces a different set of files.
+   */
+  upstreamOutputSignatures?: {
+    [nodeName: string]: string;
+  };
+
+  /**
    * When this cache entry was created.
    * Milliseconds since epoch.
    */
@@ -108,25 +118,36 @@ export class CacheManager {
    * Validate if a cache entry is still valid.
    * Uses unified validation for all tracked files.
    *
-   * Two-tier checking:
-   * 1. Check if all output files exist
-   * 2. Check if tracked files changed (timestamp → hash)
+   * Four-tier checking (ordered from cheapest to most expensive):
+   * 1. Upstream output signatures - detect if upstream produces different file set
+   * 2. Tracked file timestamps - fast stat() calls
+   * 3. Tracked file hashes - only if timestamps changed
+   * 4. Output existence - verify all outputs still exist
    *
    * Returns false if any validation check fails.
    */
-  async isValid(entry: CacheEntry): Promise<boolean> {
-    // 1. Check all output files exist (flatten from all output keys)
-    for (const paths of Object.values(entry.outputsByKey)) {
-      for (const outputPath of paths) {
-        try {
-          await fs.access(outputPath);
-        } catch {
-          return false; // Output missing
+  async isValid(entry: CacheEntry, context?: { getNodeOutputs: (nodeName: string) => any[] | undefined }): Promise<boolean> {
+    // 1. Check upstream output signatures (cheapest - string comparison)
+    if (entry.upstreamOutputSignatures && context) {
+      for (const [nodeName, cachedSignature] of Object.entries(entry.upstreamOutputSignatures)) {
+        const nodeOutputs = context.getNodeOutputs(nodeName);
+        if (!nodeOutputs) {
+          return false; // Upstream node hasn't run yet
+        }
+
+        // Flatten all output keys into single list of paths
+        const allPaths = nodeOutputs.flatMap(output =>
+          Object.values(output).flat()
+        );
+
+        const currentSignature = CacheManager.computeOutputSignature(allPaths);
+        if (currentSignature !== cachedSignature) {
+          return false; // Upstream produced different file set
         }
       }
     }
 
-    // 2. Check ALL tracked files with unified logic
+    // 2. Check ALL tracked files with unified logic (timestamps first, then hashes)
     for (const [filePath, fileInfo] of Object.entries(entry.trackedFiles)) {
       try {
         const stats = await fs.stat(filePath);
@@ -147,7 +168,28 @@ export class CacheManager {
       }
     }
 
+    // 3. Check all output files exist (moved to end - if dependencies valid, outputs usually exist)
+    for (const paths of Object.values(entry.outputsByKey)) {
+      for (const outputPath of paths) {
+        try {
+          await fs.access(outputPath);
+        } catch {
+          return false; // Output missing
+        }
+      }
+    }
+
     return true;
+  }
+
+  /**
+   * Compute a signature hash from a list of file paths.
+   * Used for tracking upstream output sets.
+   */
+  static computeOutputSignature(filePaths: string[]): string {
+    const sorted = [...filePaths].sort();
+    const combined = sorted.join('|');
+    return crypto.createHash('sha256').update(combined).digest('hex').substring(0, 16);
   }
 
   /**
@@ -256,7 +298,8 @@ export class CacheManager {
     outputBaseDir: string,
     itemKey: string,
     discoveredDependencies?: string[],
-    fileRefPaths?: string[]
+    fileRefPaths?: string[],
+    upstreamOutputSignatures?: { [nodeName: string]: string }
   ): Promise<CacheEntry> {
     const trackedFiles: Record<string, {hash: string, timestamp: number, source: 'item' | 'fileRef' | 'discovered' | 'explicit'}> = {};
 
@@ -307,6 +350,7 @@ export class CacheManager {
       outputsByKey,
       outputBaseDir,
       trackedFiles,
+      upstreamOutputSignatures,
       timestamp: Date.now(),
       itemKey
     };

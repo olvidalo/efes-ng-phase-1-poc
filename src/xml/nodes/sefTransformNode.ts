@@ -11,10 +11,6 @@ import { readFile } from "node:fs/promises";
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";
 
-// @ts-ignore
-// Register Kiln extension functions at module load
-// @ts-ignore
-
 interface SefTransformConfig extends PipelineNodeConfig {
     items?: Input;  // sourceXml files (optional for no-source transforms)
     config: {
