@@ -35,13 +35,18 @@ interface CacheEntry {
   };
 
   /**
-   * Signatures of upstream node outputs (from `from()` references).
-   * Tracks the *set* of files produced by upstream nodes.
-   * Map: nodeName -> hash of sorted output file paths
-   * Used to detect when upstream produces a different set of files.
+   * Upstream output signatures from `from()` references.
+   * Stores both the signature AND the reference spec (outputKey, glob).
+   * The signature detects when upstream produces a different set of files.
+   * The spec is needed to recompute the signature during validation.
+   * Map: nodeName -> { signature, outputKey, glob? }
    */
   upstreamOutputSignatures?: {
-    [nodeName: string]: string;
+    [nodeName: string]: {
+      signature: string;
+      outputKey: string;
+      glob?: string;
+    };
   };
 
   /**
@@ -126,22 +131,34 @@ export class CacheManager {
    *
    * Returns false if any validation check fails.
    */
-  async isValid(entry: CacheEntry, context?: { getNodeOutputs: (nodeName: string) => any[] | undefined }): Promise<boolean> {
+  async isValid(
+    entry: CacheEntry,
+    context?: {
+      getNodeOutputs: (nodeName: string) => any[] | undefined;
+      resolveInput?: (input: any) => Promise<string[]>;
+    }
+  ): Promise<boolean> {
     // 1. Check upstream output signatures (cheapest - string comparison)
-    if (entry.upstreamOutputSignatures && context) {
-      for (const [nodeName, cachedSignature] of Object.entries(entry.upstreamOutputSignatures)) {
-        const nodeOutputs = context.getNodeOutputs(nodeName);
-        if (!nodeOutputs) {
-          return false; // Upstream node hasn't run yet
+    if (entry.upstreamOutputSignatures && context?.resolveInput) {
+      for (const [nodeName, upstreamInfo] of Object.entries(entry.upstreamOutputSignatures)) {
+        // Reconstruct the NodeOutputReference from stored metadata
+        const nodeRef = {
+          node: { name: nodeName },
+          name: upstreamInfo.outputKey,
+          glob: upstreamInfo.glob,
+          type: 'node-output-reference' as const
+        };
+
+        let currentPaths: string[];
+        try {
+          // Use resolveInput to get the correctly filtered paths (same as during storage)
+          currentPaths = await context.resolveInput(nodeRef);
+        } catch (error) {
+          return false; // Upstream node hasn't run yet or error occurred
         }
 
-        // Flatten all output keys into single list of paths
-        const allPaths = nodeOutputs.flatMap(output =>
-          Object.values(output).flat()
-        );
-
-        const currentSignature = CacheManager.computeOutputSignature(allPaths);
-        if (currentSignature !== cachedSignature) {
+        const currentSignature = CacheManager.computeOutputSignature(currentPaths);
+        if (currentSignature !== upstreamInfo.signature) {
           return false; // Upstream produced different file set
         }
       }
@@ -163,7 +180,8 @@ export class CacheManager {
           return false; // Content changed
         }
         // Timestamp changed but content identical - still valid
-      } catch {
+      } catch (err) {
+        console.log(`[CACHE DEBUG] File missing or inaccessible: ${filePath}`);
         return false; // File missing
       }
     }
@@ -299,7 +317,13 @@ export class CacheManager {
     itemKey: string,
     discoveredDependencies?: string[],
     fileRefPaths?: string[],
-    upstreamOutputSignatures?: { [nodeName: string]: string }
+    upstreamOutputSignatures?: {
+      [nodeName: string]: {
+        signature: string;
+        outputKey: string;
+        glob?: string;
+      };
+    }
   ): Promise<CacheEntry> {
     const trackedFiles: Record<string, {hash: string, timestamp: number, source: 'item' | 'fileRef' | 'discovered' | 'explicit'}> = {};
 

@@ -227,12 +227,24 @@ export abstract class PipelineNode<TConfig extends PipelineNodeConfig = Pipeline
             upstreamNodes.set(this.items.node.name, this.items);
         }
 
-        // Compute upstream output signatures
-        const upstreamOutputSignatures: { [nodeName: string]: string } = {};
+        // Compute upstream output signatures with metadata
+        const upstreamOutputSignatures: {
+            [nodeName: string]: {
+                signature: string;
+                outputKey: string;
+                glob?: string;
+            };
+        } = {};
         for (const [nodeName, nodeRef] of upstreamNodes.entries()) {
             const outputs = await context.resolveInput(nodeRef);
-            upstreamOutputSignatures[nodeName] = CacheManager.computeOutputSignature(outputs);
+            const signature = CacheManager.computeOutputSignature(outputs);
+            upstreamOutputSignatures[nodeName] = {
+                signature,
+                outputKey: nodeRef.name,
+                glob: nodeRef.glob
+            };
         }
+
 
         const cacheKeys = items.map(getCacheKey);
         context.log(`Cache lookup - contentSignature: ${contentSignature}`);
