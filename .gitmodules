@@ -1,0 +1,12 @@
+[submodule "projects/ircyr-xslt/ircyr-efes"]
+	path = projects/ircyr-xslt/1-input/ircyr-efes
+	url = https://github.com/kingsdigitallab/ircyr-efes
+[submodule "projects/ircyr-11ty/1-input/epidoc-stylesheets"]
+	path = projects/ircyr-11ty/1-input/epidoc-stylesheets
+	url = https://github.com/EpiDoc/Stylesheets
+[submodule "projects/sigidoc-feind-11ty/1-input/feind-collection"]
+	path = projects/sigidoc-feind-11ty/1-input/feind-collection
+	url = https://github.com/byzantinistik-koeln/feind-collection
+[submodule "projects/sigidoc-feind-11ty/1-input/sigidoc-stylesheets"]
+	path = projects/sigidoc-feind-11ty/1-input/sigidoc-stylesheets
+	url = https://github.com/SigiDoc/Stylesheets

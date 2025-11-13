@@ -66,6 +66,8 @@ interface TransformJob {
     transformOptions: {
         initialTemplate?: string;
         stylesheetParams?: Record<string, any>;
+        tunnelParams?: Record<string, any>;
+        templateParams?: Record<string, any>;
         initialMode?: string;
         outputProperties?: Record<string, any>;
     };

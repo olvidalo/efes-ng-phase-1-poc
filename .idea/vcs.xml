@@ -2,7 +2,9 @@
 <project version="4">
   <component name="VcsDirectoryMappings">
     <mapping directory="$PROJECT_DIR$" vcs="Git" />
-    <mapping directory="$PROJECT_DIR$/project/ircyr-efes" vcs="Git" />
-    <mapping directory="$PROJECT_DIR$/project2/ircyr-efes" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/projects/ircyr-11ty/1-input/epidoc-stylesheets" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/projects/ircyr-xslt/1-input/ircyr-efes" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/projects/sigidoc-feind-11ty/1-input/feind-collection" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/projects/sigidoc-feind-11ty/1-input/sigidoc-stylesheets" vcs="Git" />
   </component>
 </project>

@@ -1,0 +1,10 @@
+{
+  "namespace": "http://www.kcl.ac.uk/artshums/depts/ddh/kiln/ns/1.0",
+  "signatures": {
+    "url-for-match": {
+      "as": "xs:string",
+      "param": ["xs:string", "xs:string*", "xs:integer"],
+      "arity": [3]
+    }
+  }
+}

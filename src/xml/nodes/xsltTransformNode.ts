@@ -9,6 +9,8 @@ interface XsltTransformConfig extends PipelineNodeConfig {
         stylesheet: FileRef | Input;
         initialTemplate?: string;
         stylesheetParams?: Record<string, any | ((inputPath: string) => any)>;
+        tunnelParams?: Record<string, any | ((inputPath: string) => any)>;
+        templateParams?: Record<string, any | ((inputPath: string) => any)>;
         serializationParams?: Record<string, any>;
         initialMode?: string;
     };
@@ -37,6 +39,7 @@ export class XsltTransformNode extends CompositeNode<XsltTransformConfig, "trans
                 sefStylesheet: from(compile, "compiledStylesheet"),
                 initialTemplate: this.config.config.initialTemplate,
                 stylesheetParams: this.config.config.stylesheetParams,
+                templateParams: this.config.config.templateParams,
                 serializationParams: this.config.config.serializationParams,
                 initialMode: this.config.config.initialMode,
             },

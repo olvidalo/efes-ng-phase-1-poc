@@ -1,0 +1,281 @@
+---
+layout: layouts/base.njk
+---
+
+{# Sort inscriptions by sortKey for natural ordering #}
+{% set sortedInscriptions = collections.inscriptions | sort(false, false, "data.sortKey") %}
+
+{# Find current item's index in sorted array #}
+{% set currentIndex = -1 %}
+{% for item in sortedInscriptions %}
+  {% if item.url == page.url %}
+    {% set currentIndex = loop.index0 %}
+  {% endif %}
+{% endfor %}
+
+{# Get previous and next items based on sorted order #}
+{% set previousPost = sortedInscriptions[currentIndex - 1] if currentIndex > 0 else null %}
+{% set nextPost = sortedInscriptions[currentIndex + 1] if currentIndex < (sortedInscriptions | length - 1) else null %}
+
+<nav class="inscription-nav">
+  <a href="/" class="index-link">← Back to Inscription Index</a>
+
+  <div class="prev-next">
+    {% if previousPost %}
+      <a href="{{ previousPost.url }}" class="prev-link">← Previous: {{ previousPost.data.documentId }}</a>
+    {% else %}
+      <span class="disabled">← Previous</span>
+    {% endif %}
+
+    {% if nextPost %}
+      <a href="{{ nextPost.url }}" class="next-link">Next: {{ nextPost.data.documentId }} →</a>
+    {% else %}
+      <span class="disabled">Next →</span>
+    {% endif %}
+  </div>
+</nav>
+
+<div class="document">
+  <div class="document-content">
+    {{ content | safe }}
+  </div>
+</div>
+
+<nav class="inscription-nav-bottom">
+  <div class="prev-next">
+    {% if previousPost %}
+      <a href="{{ previousPost.url }}" class="prev-link">← Previous: {{ previousPost.data.documentId }}</a>
+    {% else %}
+      <span class="disabled">← Previous</span>
+    {% endif %}
+
+    {% if nextPost %}
+      <a href="{{ nextPost.url }}" class="next-link">Next: {{ nextPost.data.documentId }} →</a>
+    {% else %}
+      <span class="disabled">Next →</span>
+    {% endif %}
+  </div>
+</nav>
+
+<style>
+  /* Navigation styling */
+  .inscription-nav,
+  .inscription-nav-bottom {
+    margin: 1.5rem 0;
+    padding: 1.25rem;
+    background: linear-gradient(to right, #f7fafc, #edf2f7);
+    border-radius: 8px;
+    border: 1px solid #e2e8f0;
+  }
+
+  .inscription-nav {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 1rem;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+  }
+
+  .inscription-nav-bottom {
+    margin-top: 3rem;
+  }
+
+  .index-link {
+    font-weight: 600;
+    color: var(--primary-color, #2c5282);
+    text-decoration: none;
+    padding: 0.5rem 1rem;
+    border-radius: 6px;
+    transition: all 0.2s ease;
+  }
+
+  .index-link:hover {
+    background: white;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+  }
+
+  .prev-next {
+    display: flex;
+    gap: 1rem;
+    flex-wrap: wrap;
+  }
+
+  .prev-link,
+  .next-link {
+    color: var(--accent-color, #0066cc);
+    text-decoration: none;
+    padding: 0.625rem 1.25rem;
+    border: 2px solid #cbd5e0;
+    border-radius: 6px;
+    background: white;
+    font-weight: 500;
+    transition: all 0.2s ease;
+  }
+
+  .prev-link:hover,
+  .next-link:hover {
+    background: #0066cc;
+    color: white;
+    border-color: #0066cc;
+    transform: translateY(-1px);
+    box-shadow: 0 4px 8px rgba(0,102,204,0.3);
+  }
+
+  .prev-next .disabled {
+    color: #a0aec0;
+    padding: 0.625rem 1.25rem;
+    border: 2px solid #e2e8f0;
+    border-radius: 6px;
+    background: #f7fafc;
+  }
+
+  /* Document content styling */
+  .document {
+    margin-top: 2rem;
+  }
+
+  .document-content {
+    line-height: 1.8;
+  }
+
+  /* Source description */
+  #source-description {
+    background: #f7fafc;
+    padding: 1.5rem;
+    border-radius: 8px;
+    margin-bottom: 2rem;
+    border-left: 4px solid #4299e1;
+  }
+
+  #source-description p {
+    margin: 0.75rem 0;
+  }
+
+  #source-description b {
+    color: #2c5282;
+    font-weight: 600;
+  }
+
+  /* Edition text sections */
+  #edition-text h3,
+  #translation h3,
+  #commentary h3,
+  #images h3 {
+    color: #2c5282;
+    font-size: 1.5rem;
+    font-weight: 600;
+    margin-top: 2rem;
+    margin-bottom: 1rem;
+    padding-bottom: 0.5rem;
+    border-bottom: 2px solid #cbd5e0;
+  }
+
+  /* Tabs/sections */
+  .section-container.tabs {
+    margin: 2rem 0;
+    border: 1px solid #e2e8f0;
+    border-radius: 8px;
+    overflow: hidden;
+  }
+
+  .section-container section {
+    border-bottom: 1px solid #e2e8f0;
+  }
+
+  .section-container section:last-child {
+    border-bottom: none;
+  }
+
+  .section-container .title {
+    background: #edf2f7;
+    padding: 1rem 1.5rem;
+    margin: 0;
+    font-weight: 600;
+  }
+
+  .section-container .title a {
+    color: #2c5282;
+    text-decoration: none;
+  }
+
+  .section-container .content {
+    padding: 1.5rem;
+    background: white;
+  }
+
+  /* Text parts */
+  .textpart {
+    background: #fafafa;
+    padding: 1.5rem;
+    border-radius: 6px;
+    border: 1px solid #e2e8f0;
+    margin: 1rem 0;
+  }
+
+  .textpart[lang="grc"] {
+    font-family: 'Times New Roman', Times, serif;
+    font-size: 1.125rem;
+    line-height: 1.8;
+  }
+
+  .ab {
+    display: block;
+  }
+
+  /* Translation & Commentary */
+  #translation,
+  #commentary {
+    background: white;
+    padding: 1.5rem;
+    border-radius: 8px;
+    margin: 2rem 0;
+    border: 1px solid #e2e8f0;
+  }
+
+  #translation p,
+  #commentary p {
+    margin: 1rem 0;
+    color: #4a5568;
+  }
+
+  /* Bibliography */
+  #edition-text > p:last-child {
+    background: #fef5e7;
+    padding: 1.25rem;
+    border-radius: 8px;
+    margin-top: 2rem;
+    border-left: 4px solid #f59e0b;
+  }
+
+  /* Links */
+  .document-content a {
+    color: #0066cc;
+    text-decoration: none;
+    border-bottom: 1px solid transparent;
+    transition: border-color 0.2s ease;
+  }
+
+  .document-content a:hover {
+    border-bottom-color: #0066cc;
+  }
+
+  @media (max-width: 768px) {
+    .inscription-nav {
+      flex-direction: column;
+      align-items: flex-start;
+    }
+
+    .prev-next {
+      width: 100%;
+      justify-content: space-between;
+    }
+
+    #source-description,
+    .textpart,
+    #translation,
+    #commentary {
+      padding: 1rem;
+    }
+  }
+</style>

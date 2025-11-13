@@ -18,6 +18,8 @@ interface SefTransformConfig extends PipelineNodeConfig {
         sefStylesheet: FileRef | Input;  // Can be FileRef or NodeOutputReference
         initialTemplate?: string;
         stylesheetParams?: Record<string, any | ((inputPath: string) => any)>;
+        tunnelParams?: Record<string, any | ((inputPath: string) => any)>;
+        templateParams?: Record<string, any | ((inputPath: string) => any)>;
         // TODO: passing {indent: false} indents anyway
         serializationParams?: Record<string, any>;
         initialMode?: string;
@@ -115,6 +117,8 @@ export class SefTransformNode extends PipelineNode<SefTransformConfig, "transfor
                 const transformOptions = {
                     initialTemplate: this.config.config.initialTemplate,
                     stylesheetParams,
+                    tunnelParams: this.config.config.tunnelParams,
+                    templateParams: this.config.config.templateParams,
                     initialMode: this.config.config.initialMode,
                     outputProperties: this.config.config.serializationParams
                 };

@@ -1,0 +1,78 @@
+<header>
+    <div class="row">
+        <div class="large-12 columns">
+            <h1 id="site-title">
+                <span id="site-title-abbr">IRCyr</span>
+                <span class="title-separator"></span>
+                <span id="site-title-full">Inscriptions of Roman Cyrenaica</span>
+            </h1>
+        </div>
+    </div>
+</header>
+
+<style>
+    header {
+        background: linear-gradient(135deg, #2c5282 0%, #2d3748 100%);
+        color: white;
+        padding: 2rem 0;
+        box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+        margin-bottom: 0;
+    }
+
+    #site-title {
+        margin: 0;
+        padding: 0;
+        font-size: 2rem;
+        font-weight: 700;
+        display: flex;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: 1rem;
+    }
+
+    #site-title-abbr {
+        font-size: 2.5rem;
+        font-weight: 800;
+        color: #fff;
+        letter-spacing: 0.05em;
+        text-shadow: 2px 2px 4px rgba(0,0,0,0.3);
+    }
+
+    .title-separator {
+        width: 2px;
+        height: 2rem;
+        background: rgba(255,255,255,0.4);
+        display: inline-block;
+    }
+
+    #site-title-full {
+        font-size: 1.25rem;
+        font-weight: 400;
+        color: #e2e8f0;
+        letter-spacing: 0.025em;
+    }
+
+    @media (max-width: 768px) {
+        header {
+            padding: 1.5rem 0;
+        }
+
+        #site-title {
+            flex-direction: column;
+            align-items: flex-start;
+            gap: 0.5rem;
+        }
+
+        #site-title-abbr {
+            font-size: 2rem;
+        }
+
+        #site-title-full {
+            font-size: 1.125rem;
+        }
+
+        .title-separator {
+            display: none;
+        }
+    }
+</style>

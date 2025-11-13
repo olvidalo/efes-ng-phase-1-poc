@@ -1,0 +1,459 @@
+---
+layout: layouts/base.njk
+---
+
+{# Get translations for current language #}
+{% set t = translations[language].nav %}
+
+{# Filter seals by current language and sort by sortKey #}
+{% set langSeals = [] %}
+{% for seal in collections.seals %}
+  {% if seal.data.language == language %}
+    {% set langSeals = (langSeals.push(seal), langSeals) %}
+  {% endif %}
+{% endfor %}
+{% set sortedSeals = langSeals | sort(false, false, "data.sortKey") %}
+
+{# Find current item's index in sorted array #}
+{% set currentIndex = -1 %}
+{% for item in sortedSeals %}
+  {% if item.url == page.url %}
+    {% set currentIndex = loop.index0 %}
+  {% endif %}
+{% endfor %}
+
+{# Get previous and next items based on sorted order #}
+{% set previousPost = sortedSeals[currentIndex - 1] if currentIndex > 0 else null %}
+{% set nextPost = sortedSeals[currentIndex + 1] if currentIndex < (sortedSeals | length - 1) else null %}
+
+<nav class="inscription-nav">
+  <a href="/{{ language }}/seals/" class="index-link">← {{ t.backToIndex }}</a>
+
+  <div class="prev-next">
+    {% if previousPost %}
+      <a href="{{ previousPost.url }}" class="prev-link">← {{ t.previous }}: {{ previousPost.data.documentId }}</a>
+    {% else %}
+      <span class="disabled">← {{ t.previous }}</span>
+    {% endif %}
+
+    {% if nextPost %}
+      <a href="{{ nextPost.url }}" class="next-link">{{ t.next }}: {{ nextPost.data.documentId }} →</a>
+    {% else %}
+      <span class="disabled">{{ t.next }} →</span>
+    {% endif %}
+  </div>
+</nav>
+
+<div class="document">
+  <div class="document-content">
+    {{ content | safe }}
+  </div>
+</div>
+
+<nav class="inscription-nav-bottom">
+  <div class="prev-next">
+    {% if previousPost %}
+      <a href="{{ previousPost.url }}" class="prev-link">← {{ t.previous }}: {{ previousPost.data.documentId }}</a>
+    {% else %}
+      <span class="disabled">← {{ t.previous }}</span>
+    {% endif %}
+
+    {% if nextPost %}
+      <a href="{{ nextPost.url }}" class="next-link">{{ t.next }}: {{ nextPost.data.documentId }} →</a>
+    {% else %}
+      <span class="disabled">{{ t.next }} →</span>
+    {% endif %}
+  </div>
+</nav>
+
+<style>
+  /* Navigation styling */
+  .inscription-nav,
+  .inscription-nav-bottom {
+    margin: 1rem 0;
+    padding: 0.5rem 0.75rem;
+    background: #f7fafc;
+    border-radius: 4px;
+    border: 1px solid #e2e8f0;
+    font-size: 0.875rem;
+  }
+
+  .inscription-nav {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 0.75rem;
+  }
+
+  .inscription-nav-bottom {
+    margin-top: 2rem;
+    display: flex;
+    justify-content: center;
+  }
+
+  .inscription-nav-bottom .prev-next {
+    justify-content: center;
+  }
+
+  .index-link {
+    font-weight: 500;
+    color: #4a5568;
+    text-decoration: none;
+    padding: 0.25rem 0.5rem;
+    border-radius: 3px;
+    transition: all 0.15s ease;
+  }
+
+  .index-link:hover {
+    background: #edf2f7;
+    color: #2c5282;
+  }
+
+  .prev-next {
+    display: flex;
+    gap: 0.75rem;
+    flex-wrap: wrap;
+  }
+
+  .prev-link,
+  .next-link {
+    color: #0066cc;
+    text-decoration: none;
+    padding: 0.25rem 0.625rem;
+    border: 1px solid #cbd5e0;
+    border-radius: 3px;
+    background: white;
+    font-weight: 400;
+    transition: all 0.15s ease;
+  }
+
+  .prev-link:hover,
+  .next-link:hover {
+    background: #edf2f7;
+    border-color: #0066cc;
+  }
+
+  .prev-next .disabled {
+    color: #a0aec0;
+    padding: 0.25rem 0.625rem;
+    border: 1px solid #e2e8f0;
+    border-radius: 3px;
+    background: #f7fafc;
+  }
+
+  /* Document content styling */
+  .document {
+    margin-top: 2rem;
+  }
+
+  .document-content {
+    line-height: 1.8;
+  }
+
+  /* SigiDoc ID header */
+  .document-content h6 {
+    text-align: right;
+    color: #718096;
+    font-size: 0.875rem;
+    font-weight: 500;
+    margin: 0 0 1.5rem;
+    padding: 0.5rem 0;
+    border-bottom: 1px solid #e2e8f0;
+  }
+
+  /* Seal metadata sections */
+  #stone,
+  #text-field {
+    background: #f7fafc;
+    padding: 1.5rem;
+    border-radius: 8px;
+    margin-bottom: 1.5rem;
+    border-left: 4px solid #4299e1;
+  }
+
+  /* Section headers */
+  h3.iospe,
+  h4.iospe {
+    color: #2c5282;
+    font-weight: 600;
+    margin-top: 0;
+    margin-bottom: 1rem;
+    padding-bottom: 0.5rem;
+    border-bottom: 2px solid #cbd5e0;
+  }
+
+  h3.iospe {
+    font-size: 1.5rem;
+  }
+
+  h4.iospe {
+    font-size: 1.25rem;
+  }
+
+  /* Definition lists - only apply grid to those with actual content inside metadata sections */
+  #stone dl.iospe,
+  #text-field dl.iospe,
+  #bibliography dl.iospe {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    gap: 0.75rem 1.5rem;
+    margin: 0;
+  }
+
+  #stone dl.iospe dt,
+  #text-field dl.iospe dt,
+  #bibliography dl.iospe dt {
+    font-weight: 600;
+    color: #4a5568;
+    font-size: 0.9rem;
+  }
+
+  #stone dl.iospe dd,
+  #text-field dl.iospe dd,
+  #bibliography dl.iospe dd {
+    margin: 0;
+    color: #2d3748;
+  }
+
+  #stone dl.iospe dd b,
+  #text-field dl.iospe dd b,
+  #bibliography dl.iospe dd b {
+    color: #2c5282;
+    font-weight: 600;
+  }
+
+  /* Images section */
+  #images {
+    background: white;
+    padding: 1.5rem;
+    border-radius: 8px;
+    margin: 2rem 0;
+    border: 1px solid #e2e8f0;
+  }
+
+  dl.box {
+    display: inline-block;
+    margin: 1rem;
+    text-align: center;
+  }
+
+  dl.box dd {
+    margin: 0 0 0.5rem;
+  }
+
+  dl.box img {
+    max-width: 300px;
+    border-radius: 6px;
+    border: 1px solid #e2e8f0;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+    transition: transform 0.2s ease;
+  }
+
+  dl.box img:hover {
+    transform: scale(1.02);
+    box-shadow: 0 4px 8px rgba(0,0,0,0.15);
+  }
+
+  dl.box dt {
+    font-size: 0.875rem;
+    color: #718096;
+  }
+
+  /* Edition section */
+  .RTIedition {
+    background: white;
+    padding: 1.5rem;
+    border-radius: 8px;
+    margin: 2rem 0;
+    border: 1px solid #e2e8f0;
+  }
+
+  .section-container.tabs {
+    margin: 1rem 0;
+    border: 1px solid #e2e8f0;
+    border-radius: 8px;
+    overflow: hidden;
+  }
+
+  .section-container section {
+    border-bottom: 1px solid #e2e8f0;
+  }
+
+  .section-container section:last-child {
+    border-bottom: none;
+  }
+
+  .section-container .title {
+    background: #edf2f7;
+    padding: 1rem 1.5rem;
+    margin: 0;
+    font-weight: 600;
+  }
+
+  .section-container .title a {
+    color: #2c5282;
+    text-decoration: none;
+  }
+
+  .section-container .content {
+    padding: 1.5rem;
+    background: white;
+  }
+
+  /* Text part numbers (obv, rev) */
+  .textpartnumber {
+    display: block;
+    font-weight: 700;
+    color: #2c5282;
+    margin-top: 1.5rem;
+    margin-bottom: 0.5rem;
+    font-size: 1rem;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+
+  /* Greek text */
+  .textpart {
+    background: #fafafa;
+    padding: 1.5rem;
+    border-radius: 6px;
+    border: 1px solid #e2e8f0;
+    margin: 1rem 0;
+  }
+
+  .textpart[lang="grc"] {
+    font-family: 'Times New Roman', Times, serif;
+    font-size: 1.125rem;
+    line-height: 1.8;
+  }
+
+  .ab {
+    display: block;
+  }
+
+  .ab br {
+    margin-bottom: 0.25rem;
+  }
+
+  .gap {
+    color: #a0aec0;
+  }
+
+  /* Translation section */
+  #translation {
+    background: white;
+    padding: 1.5rem;
+    border-radius: 8px;
+    margin: 2rem 0;
+    border: 1px solid #e2e8f0;
+  }
+
+  #translation p {
+    margin: 1rem 0;
+    color: #4a5568;
+    line-height: 1.8;
+  }
+
+  #translation p:first-of-type {
+    font-family: 'Times New Roman', Times, serif;
+    font-size: 1.125rem;
+  }
+
+  /* Bibliography section */
+  #bibliography {
+    background: #fef5e7;
+    padding: 1.5rem;
+    border-radius: 8px;
+    margin: 2rem 0;
+    border-left: 4px solid #f59e0b;
+  }
+
+  /* Commentary section */
+  #commentary {
+    background: white;
+    padding: 1.5rem;
+    border-radius: 8px;
+    margin: 2rem 0;
+    border: 1px solid #e2e8f0;
+  }
+
+  #commentary p {
+    margin: 1rem 0;
+    color: #4a5568;
+    line-height: 1.8;
+  }
+
+  /* Footnotes section */
+  #footnotes {
+    background: #f7fafc;
+    padding: 1.5rem;
+    border-radius: 8px;
+    margin: 2rem 0;
+    border-left: 4px solid #718096;
+  }
+
+  #footnotes p {
+    margin: 0.75rem 0;
+    color: #4a5568;
+    font-size: 0.9rem;
+  }
+
+  .fnseparator {
+    margin: 2rem 0;
+  }
+
+  /* Links */
+  .document-content a {
+    color: #0066cc;
+    text-decoration: none;
+    border-bottom: 1px solid transparent;
+    transition: border-color 0.2s ease;
+  }
+
+  .document-content a:hover {
+    border-bottom-color: #0066cc;
+  }
+
+  @media (max-width: 768px) {
+    .inscription-nav {
+      flex-direction: column;
+      align-items: flex-start;
+    }
+
+    .prev-next {
+      width: 100%;
+      justify-content: space-between;
+    }
+
+    #stone dl.iospe,
+    #text-field dl.iospe,
+    #bibliography dl.iospe {
+      grid-template-columns: 1fr;
+      gap: 0.5rem;
+    }
+
+    #stone dl.iospe dt,
+    #text-field dl.iospe dt,
+    #bibliography dl.iospe dt {
+      font-weight: 700;
+      margin-top: 0.75rem;
+    }
+
+    #stone,
+    #text-field,
+    .textpart,
+    #translation,
+    #bibliography,
+    #commentary,
+    #footnotes,
+    .RTIedition,
+    #images {
+      padding: 1rem;
+    }
+
+    dl.box img {
+      max-width: 100%;
+    }
+  }
+</style>

@@ -61,6 +61,7 @@ export interface TransformJob {
     transformOptions: {
         initialTemplate?: string;
         stylesheetParams?: Record<string, any>;
+        templateParams?: Record<string, any>;
         initialMode?: string;
         outputProperties?: Record<string, any>;
     };
@@ -106,10 +107,14 @@ export async function performWork(job: TransformJob): Promise<TransformResult> {
         transformOptions.sourceNode = sourceNode;
     }
 
-    // transformOptions.stylesheetInternal = job.stylesheetInternal; // TODO: why???
-    // console.log(typeof job.stylesheetInternal)
-    // console.log(transformOptions);
-    const result = await SaxonJS.transform(transformOptions);
+    let result
+    try {
+        result = await SaxonJS.transform(transformOptions);
+    } catch (error) {
+        console.log("Error transforming", job.sourcePath, " with ", path.basename(job.sefStylesheetPath, ".sef.json"));
+        console.error(error);
+        throw error
+    }
 
     // Write principal result
     await fs.mkdir(path.dirname(job.outputPath), { recursive: true });

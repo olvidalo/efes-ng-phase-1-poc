@@ -274,6 +274,7 @@ export class CacheManager {
   /**
    * Compute SHA256 hash of a file's contents.
    * Used for content-based cache invalidation.
+   * Public so that callers can pre-compute hashes for batch operations.
    */
   async computeFileHash(filePath: string): Promise<string> {
     const content = await fs.readFile(filePath);
@@ -309,6 +310,7 @@ export class CacheManager {
   /**
    * Helper to build a cache entry with unified file tracking.
    * Computes hashes and timestamps for all files with same logic.
+   * @param precomputedHashes - Optional map of pre-computed hashes for shared dependencies (fileRefs)
    */
   async buildCacheEntry(
     itemPaths: string[],
@@ -323,7 +325,8 @@ export class CacheManager {
         outputKey: string;
         glob?: string;
       };
-    }
+    },
+    precomputedHashes?: Map<string, {hash: string, timestamp: number}>
   ): Promise<CacheEntry> {
     const trackedFiles: Record<string, {hash: string, timestamp: number, source: 'item' | 'fileRef' | 'discovered' | 'explicit'}> = {};
 
@@ -340,18 +343,15 @@ export class CacheManager {
       }
     }
 
-    // Track fileRefs
-    if (fileRefPaths) {
+    // Track fileRefs - use precomputed hashes (passed by caller to avoid redundant hashing)
+    if (fileRefPaths && precomputedHashes) {
       for (const filePath of fileRefPaths) {
-        try {
-          const [hash, stats] = await Promise.all([
-            this.computeFileHash(filePath),
-            fs.stat(filePath)
-          ]);
-          trackedFiles[filePath] = { hash, timestamp: stats.mtimeMs, source: 'fileRef' };
-        } catch {
-          // Skip missing files
+        const precomputed = precomputedHashes.get(filePath);
+        if (precomputed) {
+          // Use precomputed hash (avoids re-hashing same stylesheet 2360 times)
+          trackedFiles[filePath] = { ...precomputed, source: 'fileRef' };
         }
+        // If not precomputed, skip it (caller should have precomputed all fileRefs)
       }
     }
 

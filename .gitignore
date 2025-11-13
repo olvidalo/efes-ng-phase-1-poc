@@ -12,13 +12,13 @@ CLAUDE.md
 test/**/.test-temp
 .profile-temp/
 
-project/build
-project/index-data
-project/processed-stylesheets
-project/site-source/**/*.html
-project/site-source/**/*.json
-project/site-source/search-data
-project/site-source/en/indices
+projects/*/.efes-build/
+projects/*/.efes-cache/
+projects/*/2-intermediate/*
+!projects/*/2-intermediate/.keep
+projects/*/3-output/*
+!projects/*/3-output/.keep
 
-project2/dest
-project2/preprocessed
+pages/*
+!pages/.keep
+

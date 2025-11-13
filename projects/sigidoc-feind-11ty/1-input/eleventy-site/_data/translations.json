@@ -1,0 +1,59 @@
+{
+  "en": {
+    "seals": {
+      "pageTitle": "Browse all seals",
+      "intro": "seals in the collection",
+      "headers": {
+        "documentId": "Document ID",
+        "title": "Title",
+        "findspot": "Findspot",
+        "dating": "Dating",
+        "sourceFile": "Source File"
+      },
+      "noSeals": "No seals available."
+    },
+    "nav": {
+      "backToIndex": "Back to Seal Index",
+      "previous": "Previous",
+      "next": "Next"
+    }
+  },
+  "de": {
+    "seals": {
+      "pageTitle": "Alle Siegel durchsuchen",
+      "intro": "Siegel in der Sammlung",
+      "headers": {
+        "documentId": "Dokument-ID",
+        "title": "Titel",
+        "findspot": "Fundort",
+        "dating": "Datierung",
+        "sourceFile": "Quelldatei"
+      },
+      "noSeals": "Keine Siegel verfügbar."
+    },
+    "nav": {
+      "backToIndex": "Zurück zum Siegelindex",
+      "previous": "Vorheriges",
+      "next": "Nächstes"
+    }
+  },
+  "el": {
+    "seals": {
+      "pageTitle": "Περιήγηση όλων των σφραγίδων",
+      "intro": "σφραγίδες στη συλλογή",
+      "headers": {
+        "documentId": "Αναγνωριστικό εγγράφου",
+        "title": "Τίτλος",
+        "findspot": "Τόπος ευρέσεως",
+        "dating": "Χρονολόγηση",
+        "sourceFile": "Αρχείο προέλευσης"
+      },
+      "noSeals": "Δεν υπάρχουν διαθέσιμες σφραγίδες."
+    },
+    "nav": {
+      "backToIndex": "Επιστροφή στο ευρετήριο σφραγίδων",
+      "previous": "Προηγούμενο",
+      "next": "Επόμενο"
+    }
+  }
+}

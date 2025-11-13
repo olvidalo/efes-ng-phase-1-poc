@@ -327,6 +327,24 @@ export abstract class PipelineNode<TConfig extends PipelineNodeConfig = Pipeline
         context.log(`Cache lookup - contentSignature: ${contentSignature}`);
         // await context.cache.cleanExcept(contentSignature, cacheKeys);
 
+        // Pre-compute hashes for shared dependencies (fileRefs) - these are the same for all items
+        // Avoids hashing the same stylesheet 2360 times
+        const sharedFileHashes = new Map<string, {hash: string, timestamp: number}>();
+        if (configDependencyPaths.length > 0) {
+            context.log(`Pre-computing hashes for ${configDependencyPaths.length} shared dependencies`);
+            await Promise.all(configDependencyPaths.map(async (filePath) => {
+                try {
+                    const [hash, stats] = await Promise.all([
+                        context.cache.computeFileHash(filePath),
+                        fs.stat(filePath)
+                    ]);
+                    sharedFileHashes.set(filePath, { hash, timestamp: stats.mtimeMs });
+                } catch {
+                    // File doesn't exist, skip
+                }
+            }));
+        }
+
         // NOTE: Cache validation could be parallelized with Promise.all() for potential speedup
         // on workloads with high cache hit rates (80%+) and slow I/O. However, testing showed
         // that for typical workloads (low cache hit rate, fast SSD), the Promise coordination
@@ -343,7 +361,7 @@ export abstract class PipelineNode<TConfig extends PipelineNodeConfig = Pipeline
 
             const cached = await context.cache.getCache(contentSignature, cacheKey);
             if (!cached) {
-                context.log(`  - Cache miss for ${item}: no cache entry found (key: ${cacheKey.substring(0, 50)}...)`);
+                // context.log(`  - Cache miss for ${item}: no cache entry found (key: ${cacheKey.substring(0, 50)}...)`);
                 cacheMisses.push({item, cacheKey, index: i});
                 results[i] = null; // Placeholder
                 continue;
@@ -385,7 +403,7 @@ export abstract class PipelineNode<TConfig extends PipelineNodeConfig = Pipeline
             const dependenciesValid = await context.cache.isValid(cached, context);
 
             if (!dependenciesValid) {
-                context.log(`  - Cache miss for ${item}: dependencies changed`);
+                // context.log(`  - Cache miss for ${item}: dependencies changed`);
                 cacheMisses.push({item, cacheKey, index: i});
                 results[i] = null; // Placeholder
             } else {
@@ -410,10 +428,11 @@ export abstract class PipelineNode<TConfig extends PipelineNodeConfig = Pipeline
 
         // Phase 2: Work execution (parallel) - process all cache misses concurrently
         if (cacheMisses.length > 0) {
+            context.log(`Processing ${cacheMisses.length} cache misses`);
             const workPromises = cacheMisses.map(async ({item, cacheKey, index}) => {
                 const processed = await performWork(item);
 
-                // Build unified cache entry
+                // Build unified cache entry (using pre-computed shared hashes)
                 const cacheEntry = await context.cache.buildCacheEntry(
                     [item],                    // Item files
                     processed.outputs,         // Output files by key
@@ -421,19 +440,23 @@ export abstract class PipelineNode<TConfig extends PipelineNodeConfig = Pipeline
                     cacheKey,                  // Cache key
                     processed.discoveredDependencies,    // Discovered dependencies
                     configDependencyPaths,     // Config dependencies (FileRefs + resolved from() references)
-                    upstreamOutputSignatures   // Upstream node output signatures
+                    upstreamOutputSignatures,  // Upstream node output signatures
+                    sharedFileHashes           // Pre-computed hashes for shared dependencies
                 );
 
                 return {index, item, processed, cacheEntry, cacheKey};
             });
 
+            context.log(`Awaiting completion of ${workPromises.length} work items`);
             const processedItems = await Promise.all(workPromises);
+            context.log(`Work completed, storing ${processedItems.length} cache entries`);
 
             // Phase 3: Cache storage (parallel) - save cache entries
             await Promise.all(processedItems.map(async ({index, item, processed, cacheEntry, cacheKey}) => {
                 await context.cache.setCache(contentSignature, cacheKey, cacheEntry);
                 results[index] = {item, outputs: processed.outputs, cached: false};
             }));
+            context.log(`Cache storage complete`);
         }
 
         return results.filter(r => r !== null);
@@ -612,65 +635,30 @@ export class Pipeline {
             }
         }, 5000);
 
+        // Cache for resolveInput to avoid redundant glob operations during cache validation
+        const resolveInputCache = new Map<string, Promise<string[]>>();
+
         const context: PipelineContext = {
             resolveInput: async (input: Input): Promise<string[]> => {
-
-                // Node references
-                if (inputIsNodeOutputReference(input)) {
-                    let outputs = this.nodeOutputs.get(input.node.name)?.flatMap(output => output[input.name]).filter(x => x !== undefined);
-                    if (!outputs || outputs.length === 0) {
-                        throw new Error(`Node "${input.node.name}" hasn't run yet or has not produced any outputs.`);
+                // Create a cache key from the input
+                const cacheKey = JSON.stringify(input, (key, value) => {
+                    // Handle NodeOutputReference specially to create stable keys
+                    if (value && typeof value === 'object' && 'node' in value && 'name' in value) {
+                        return `NodeRef:${value.node.name}:${value.name}:${value.glob || ''}`;
                     }
+                    return value;
+                });
 
-
-                    // Apply glob filtering if specified
-                    if (input.glob) {
-                        // Determine glob pattern based on first output location
-                        // (all outputs from a node are in the same location)
-                        let globPattern: string;
-                        if (outputs[0]?.startsWith(this.buildDir)) {
-                            // Output is in default build directory - use full path for globbing
-                            globPattern = `${this.buildDir}/*/${input.glob}`
-                        } else {
-                            // Output is in custom location - glob from current root
-                            globPattern = input.glob;
-                        }
-
-                        // Run glob ONCE to get all matches
-                        const matches = await glob(globPattern);
-                        const matchSet = new Set(matches);
-
-                        // Filter outputs to only those that match
-                        const filteredOutputs = outputs.filter(outputPath => matchSet.has(outputPath));
-
-                        if (filteredOutputs.length === 0) {
-                            throw new Error(`No files from node "${input.node.name}" output "${input.name}" match pattern: ${input.glob}.\nOutputs: ${JSON.stringify(outputs, null, 2)}`);
-                        }
-                        outputs = filteredOutputs;
-                    }
-
-                    return outputs
+                // Check cache first
+                const cached = resolveInputCache.get(cacheKey);
+                if (cached) {
+                    return cached;
                 }
 
-                // File paths
-                if (typeof input === "string") {
-                    const results = await glob(input)
-                    if (results.length === 0) {
-                        throw new Error(`No files found for pattern: ${input}`);
-                    }
-                    return results
-                }
-
-                // Arrays of node references or file paths
-                if (Array.isArray(input)) {
-                    const results: string[] = [];
-                    for (const item of input) {
-                        results.push(...(await context.resolveInput(item)))
-                    }
-                    return results;
-                }
-
-                return []
+                // Compute and cache the result (cache the promise to handle concurrent calls)
+                const resultPromise = this.resolveInputImpl(input);
+                resolveInputCache.set(cacheKey, resultPromise);
+                return resultPromise;
             },
             log: (message: string) => console.log(`  [${this.name}] ${message}`),
             cache: this.cache,
@@ -933,6 +921,68 @@ export class Pipeline {
         if (errors.length > 0) {
             throw errors[0];
         }
+    }
+
+    /**
+     * Implementation of resolveInput without caching (used internally by cached version)
+     */
+    private async resolveInputImpl(input: Input): Promise<string[]> {
+        // Node references
+        if (inputIsNodeOutputReference(input)) {
+            let outputs = this.nodeOutputs.get(input.node.name)?.flatMap(output => output[input.name]).filter(x => x !== undefined);
+            if (!outputs || outputs.length === 0) {
+                throw new Error(`Node "${input.node.name}" hasn't run yet or has not produced any outputs.`);
+            }
+
+            // Apply glob filtering if specified
+            if (input.glob) {
+                // Determine glob pattern based on first output location
+                // (all outputs from a node are in the same location)
+                let globPattern: string;
+                if (outputs[0]?.startsWith(this.buildDir)) {
+                    // Output is in default build directory - use full path for globbing
+                    globPattern = `${this.buildDir}/*/${input.glob}`
+                } else {
+                    // Output is in custom location - glob from current root
+                    globPattern = input.glob;
+                }
+
+                // Run glob ONCE to get all matches
+                const matches = await glob(globPattern);
+                const matchSet = new Set(matches);
+
+                // Filter outputs to only those that match
+                const filteredOutputs = outputs.filter(outputPath => matchSet.has(outputPath));
+
+                if (filteredOutputs.length === 0) {
+                    throw new Error(`No files from node "${input.node.name}" output "${input.name}" match pattern: ${input.glob}.\nOutputs: ${JSON.stringify(outputs, null, 2)}`);
+                }
+                outputs = filteredOutputs;
+            }
+
+            return outputs
+        }
+
+        // File paths
+        if (typeof input === "string") {
+            const results = await glob(input)
+            if (results.length === 0) {
+                throw new Error(`No files found for pattern: ${input}`);
+            }
+            return results
+        }
+
+        // Arrays of node references or file paths
+        if (Array.isArray(input)) {
+            const results: string[] = [];
+            for (const item of input) {
+                // Recursively call resolveInputImpl (not the cached version)
+                results.push(...(await this.resolveInputImpl(item)))
+            }
+            return results;
+        }
+
+        return []
     }
 
     /**

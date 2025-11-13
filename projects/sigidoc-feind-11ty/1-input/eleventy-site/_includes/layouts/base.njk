@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ title | default('EpiDoc Collection') }}</title>
+    <!-- Compressed CSS -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/foundation/4.3.2/css/foundation.min.css"
+          crossorigin="anonymous">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/foundation/4.3.2/css/normalize.min.css"
+          crossorigin="anonymous">
+
+    <link rel="stylesheet" href="{{ '/assets/css/efes-base.css' | url }}">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/modernizr/2.6.2/modernizr.min.js"></script>
+
+    <style>
+        :root {
+            --primary-color: #2c5282;
+            --primary-hover: #1a365d;
+            --accent-color: #0066cc;
+            --text-color: #2d3748;
+            --border-color: #e2e8f0;
+            --bg-light: #f7fafc;
+            --shadow-sm: 0 1px 3px rgba(0,0,0,0.12), 0 1px 2px rgba(0,0,0,0.08);
+            --shadow-md: 0 4px 6px rgba(0,0,0,0.1), 0 2px 4px rgba(0,0,0,0.06);
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+            color: var(--text-color);
+            line-height: 1.6;
+            background: linear-gradient(to bottom, #ffffff 0%, #f9fafb 100%);
+            min-height: 100vh;
+        }
+
+        .layout-grid {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 0 1.5rem;
+        }
+
+        h1 {
+            color: var(--primary-color);
+            font-weight: 600;
+            margin: 2rem 0 1.5rem;
+            padding-bottom: 0.75rem;
+            border-bottom: 3px solid var(--accent-color);
+            font-size: 2.25rem;
+        }
+
+        main {
+            background: white;
+            border-radius: 8px;
+            box-shadow: var(--shadow-md);
+            padding: 2rem;
+            margin: 2rem 0 3rem;
+            min-height: 60vh;
+        }
+
+        @media (max-width: 768px) {
+            main {
+                padding: 1.25rem;
+                margin: 1rem 0 2rem;
+            }
+
+            h1 {
+                font-size: 1.75rem;
+            }
+        }
+    </style>
+</head>
+<body>
+{% include "header.njk" %}
+
+<div class="layout-grid">
+    <div xmlns:i18n="http://apache.org/cocoon/i18n/2.1" class="row">
+        <div class="large-12 columns">
+            <h1>{{ title }}</h1>
+        </div>
+    </div>
+
+    <main>
+        <div class="row">
+            <div class="large-12 columns">
+                {{ content | safe }}
+            </div>
+        </div>
+    </main>
+</div>
+
+{% include "footer.njk" %}
+
+<!-- Compressed JavaScript -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/1.10.2/jquery.min.js" crossorigin="anonymous"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/foundation/4.3.2/js/foundation.min.js"
+        crossorigin="anonymous"></script>
+<script>
+    $(document).foundation();
+    // Enable hover for dropdown menus
+    $(document).on('mouseenter', '.top-bar .has-dropdown', function () {
+        $(this).addClass('hover');
+    }).on('mouseleave', '.top-bar .has-dropdown', function () {
+        $(this).removeClass('hover');
+    });
+</script>
+</body>
+</html>

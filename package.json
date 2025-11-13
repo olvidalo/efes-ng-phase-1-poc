@@ -1,41 +1,23 @@
 {
-  "name": "efes-ng2",
+  "name": "efes-ng-phase-1-poc",
   "version": "1.0.0",
   "description": "",
-  "main": "./dist/index.cjs",
-  "module": "./dist/index.js",
-  "types": "./dist/index.d.ts",
-  "exports": {
-    ".": {
-      "types": "./dist/index.d.ts",
-      "import": "./dist/index.js",
-      "require": "./dist/index.cjs"
-    }
-  },
-  "files": [
-    "dist"
-  ],
   "scripts": {
-    "dev": "tsup --watch",
-    "build": "tsup",
-    "build:scratch": "tsup --entry.main=scratch.ts",
-    "build:project2": "TSUP_ENTRY=project2/project2.ts tsup",
-    "test": "vitest",
-    "test:watch": "vitest watch",
-    "typecheck": "tsc --noEmit",
-    "lint": "eslint src"
+    "build:ircyr-11ty": "cd projects/ircyr-11ty && npx tsx ircyr-11ty.pipeline.ts",
+    "build:ircyr-xslt": "cd projects/ircyr-xslt && npx tsx ircyr-xslt.pipeline.ts",
+    "build:sigidoc-feind-11ty": "cd projects/sigidoc-feind-11ty && npx tsx sigidoc-feind-11ty.pipeline.ts",
+    "build:all": "npm run build:ircyr-11ty && npm run build:ircyr-xslt && npm run build:sigidoc-feind-11ty",
+    "clean:ircyr-11ty": "cd projects/ircyr-11ty && rm -rf .efes-build .efes-cache 2-intermediate 3-output",
+    "clean:ircyr-xslt": "cd projects/ircyr-xslt && rm -rf .efes-build .efes-cache 2-intermediate 3-output",
+    "clean:sigidoc-feind-11ty": "cd projects/sigidoc-feind-11ty && rm -rf .efes-build .efes-cache 2-intermediate 3-output",
+    "clean:all": "npm run clean:ircyr-11ty && npm run clean:ircyr-xslt && npm run clean:sigidoc-feind-11ty",
+    "assemble": "rm -rf pages/ircyr-11ty pages/ircyr-xslt pages/sigidoc-feind-11ty && mkdir -p pages && cp -r projects/ircyr-11ty/3-output pages/ircyr-11ty && cp -r projects/ircyr-xslt/3-output pages/ircyr-xslt && cp -r projects/sigidoc-feind-11ty/3-output pages/sigidoc-feind-11ty",
+    "relativize": "cd pages/ircyr-11ty && npx all-relative . && cd ../ircyr-xslt && npx all-relative . && cd ../sigidoc-feind-11ty && npx all-relative ."
   },
   "devDependencies": {
     "@types/node": "22.16.0",
-    "@typescript-eslint/eslint-plugin": "^8.44.1",
-    "@typescript-eslint/parser": "^8.44.1",
-    "clinic": "^13.0.0",
-    "eslint": "^9.36.0",
-    "ts-node": "^10.9.2",
-    "tsup": "^8.5.0",
     "tsx": "^4.20.6",
-    "typescript": "^5.9.2",
-    "vitest": "^3.2.4"
+    "typescript": "^5.9.2"
   },
   "dependencies": {
     "@11ty/eleventy": "^3.1.2",
@@ -46,8 +28,6 @@
     "saxonjs-he": "^3.0.0-beta2",
     "xslt3-he": "^3.0.0-beta2"
   },
-  "keywords": [],
-  "author": "",
-  "license": "MIT",
-  "packageManager": "pnpm@10.10.0"
+  "author": "Marcel Schaeben",
+  "license": "MIT"
 }

@@ -17,6 +17,17 @@
       <excludeFolder url="file://$MODULE_DIR$/project2/dest" />
       <excludeFolder url="file://$MODULE_DIR$/project2/preprocessed" />
       <excludeFolder url="file://$MODULE_DIR$/test/cache-integration/.test-temp" />
+      <excludeFolder url="file://$MODULE_DIR$/projects/ircyr-11ty/.efes-build" />
+      <excludeFolder url="file://$MODULE_DIR$/projects/ircyr-11ty/.efes-cache" />
+      <excludeFolder url="file://$MODULE_DIR$/projects/ircyr-11ty/2-intermediate" />
+      <excludeFolder url="file://$MODULE_DIR$/projects/ircyr-11ty/3-output" />
+      <excludeFolder url="file://$MODULE_DIR$/projects/ircyr-xslt/2-intermediate" />
+      <excludeFolder url="file://$MODULE_DIR$/projects/ircyr-xslt/3-output" />
+      <excludeFolder url="file://$MODULE_DIR$/pages" />
+      <excludeFolder url="file://$MODULE_DIR$/projects/sigidoc-feind-11ty/.efes-build" />
+      <excludeFolder url="file://$MODULE_DIR$/projects/sigidoc-feind-11ty/.efes-cache" />
+      <excludeFolder url="file://$MODULE_DIR$/projects/sigidoc-feind-11ty/2-intermediate" />
+      <excludeFolder url="file://$MODULE_DIR$/projects/sigidoc-feind-11ty/3-output" />
     </content>
     <orderEntry type="inheritedJdk" />
     <orderEntry type="sourceFolder" forTests="false" />

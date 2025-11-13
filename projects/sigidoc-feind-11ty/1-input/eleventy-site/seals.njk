@@ -1,0 +1,157 @@
+---
+pagination:
+  data: languages
+  size: 1
+  alias: langCode
+languages: ["en", "de", "el"]
+permalink: "{{ langCode }}/seals/index.html"
+layout: layouts/base.njk
+eleventyComputed:
+  title: "{{ translations[langCode].seals.pageTitle }}"
+  language: "{{ langCode }}"
+---
+
+{% set t = translations[langCode].seals %}
+
+{% set langSeals = [] %}
+{% for seal in collections.seals %}
+  {% if seal.data.language == langCode %}
+    {% set langSeals = (langSeals.push(seal), langSeals) %}
+  {% endif %}
+{% endfor %}
+{% set sortedSeals = langSeals | sort(false, false, "data.sortKey") %}
+
+<p class="index-intro">{{ t.pageTitle }} {{ sortedSeals | length | default(0) }} {{ t.intro }}</p>
+
+<table>
+    <thead>
+    <tr>
+        <th>{{ t.headers.documentId }}</th>
+        <th>{{ t.headers.title }}</th>
+        <th>{{ t.headers.findspot }}</th>
+        <th>{{ t.headers.dating }}</th>
+        <th>{{ t.headers.sourceFile }}</th>
+    </tr>
+    </thead>
+    <tbody>
+    {% if sortedSeals and sortedSeals | length > 0 %}
+        {% for seal in sortedSeals %}
+            <tr>
+                <td><a href="{{ seal.url }}">{{ seal.data.documentId }}</a></td>
+                <td>{{ seal.data.title }}</td>
+                <td>{{ seal.data.findspot }}</td>
+                <td>{{ seal.data.origDate }}</td>
+                <td><code>{{ seal.data.sourceFile }}</code></td>
+            </tr>
+        {% endfor %}
+    {% else %}
+        <tr>
+            <td colspan="5">{{ t.noSeals }}</td>
+        </tr>
+    {% endif %}
+    </tbody>
+</table>
+
+<style>
+    .index-intro {
+        font-size: 1.125rem;
+        color: #4a5568;
+        margin-bottom: 2rem;
+        padding: 1rem 1.5rem;
+        background: linear-gradient(to right, #f7fafc, #edf2f7);
+        border-left: 4px solid var(--accent-color, #0066cc);
+        border-radius: 4px;
+    }
+
+    table {
+        width: 100%;
+        border-collapse: separate;
+        border-spacing: 0;
+        margin-top: 2rem;
+        border: 1px solid #e2e8f0;
+        border-radius: 8px;
+        overflow: hidden;
+        box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+    }
+
+    thead {
+        background: linear-gradient(to bottom, #2c5282, #2d3748);
+        color: white;
+    }
+
+    th {
+        padding: 1rem;
+        text-align: left;
+        font-weight: 600;
+        font-size: 0.875rem;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        border: none;
+    }
+
+    td {
+        padding: 1rem;
+        border-bottom: 1px solid #e2e8f0;
+    }
+
+    tbody tr {
+        background: white;
+        transition: all 0.2s ease;
+    }
+
+    tbody tr:hover {
+        background: #f7fafc;
+        transform: translateX(2px);
+        box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
+    }
+
+    tbody tr:last-child td {
+        border-bottom: none;
+    }
+
+    td:first-child {
+        font-weight: 600;
+        color: #2c5282;
+    }
+
+    code {
+        background: #edf2f7;
+        color: #2d3748;
+        padding: 0.25rem 0.5rem;
+        border-radius: 4px;
+        font-family: 'Courier New', Courier, monospace;
+        font-size: 0.875rem;
+        border: 1px solid #cbd5e0;
+    }
+
+    a {
+        color: #0066cc;
+        text-decoration: none;
+        font-weight: 500;
+        transition: color 0.2s ease;
+    }
+
+    a:hover {
+        color: #004499;
+        text-decoration: underline;
+    }
+
+    tbody tr td:nth-child(2) {
+        color: #4a5568;
+    }
+
+    @media (max-width: 768px) {
+        table {
+            font-size: 0.875rem;
+        }
+
+        th, td {
+            padding: 0.75rem 0.5rem;
+        }
+
+        .index-intro {
+            font-size: 1rem;
+            padding: 0.875rem 1rem;
+        }
+    }
+</style>
